@@ -1,0 +1,128 @@
+import json
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+build_ecdict = pytest.importorskip("build_ecdict")
+
+
+@pytest.mark.skipif(not build_ecdict.DB_PATH.exists(), reason="ecdict.db not built")
+def test_builtin_wordlists_generated_with_inflections(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_ecdict, "COMPILED_DIR", tmp_path)
+    written = build_ecdict.build_builtin_wordlists()
+
+    assert "builtin_oxford3000" in written
+    assert "builtin_coca_2000" in written
+
+    oxford = json.loads((tmp_path / "builtin_oxford3000.json").read_text(encoding="utf-8"))
+    words = set(oxford["words"])
+    assert "apple" in words
+    assert oxford["metadata"]["tag"] == "牛津3K"
+    assert oxford["metadata"]["builtin"] is True
+
+    ielts = json.loads((tmp_path / "builtin_ielts.json").read_text(encoding="utf-8"))
+    ielts_words = set(ielts["words"])
+    # 词形扩展：列表中应包含屈折变形（如 studies/studied 类）
+    assert any(w.endswith("ies") or w.endswith("ied") for w in ielts_words)
+
+    coca = json.loads((tmp_path / "builtin_coca_2000.json").read_text(encoding="utf-8"))
+    assert coca["metadata"]["type"] == "exclude"
+    # 2000 基础词 + 屈折扩展；frq 是 TEXT 列，若忘 CAST 会按字符串比较多匹配上万词
+    assert 2000 < len(coca["words"]) < 12000
+
+    coca5 = json.loads((tmp_path / "builtin_coca_5000.json").read_text(encoding="utf-8"))
+    assert 3000 < len(coca5["words"]) < 20000
+
+
+def test_ensure_builtin_wordlists_noop_and_no_db(tmp_path, monkeypatch):
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    for list_id, *_ in build_ecdict.BUILTIN_LISTS:
+        (compiled / f"{list_id}.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(build_ecdict, "COMPILED_DIR", compiled)
+    assert build_ecdict.ensure_builtin_wordlists() == "present"
+
+    # 缺词表但无 ecdict.db → 不重建，安静跳过（公开库无词典时的启动路径）
+    (compiled / "builtin_gre.json").unlink()
+    monkeypatch.setattr(build_ecdict, "DB_PATH", tmp_path / "nope.db")
+    assert build_ecdict.ensure_builtin_wordlists() == "no-db"
+
+
+@pytest.mark.skipif(not build_ecdict.DB_PATH.exists(), reason="ecdict.db not built")
+def test_ensure_builtin_wordlists_regenerates(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_ecdict, "COMPILED_DIR", tmp_path)
+    assert build_ecdict.ensure_builtin_wordlists() == "regenerated"
+    assert (tmp_path / "builtin_cet4.json").exists()
+    assert (tmp_path / "builtin_gre.json").exists()
+
+
+def test_wordlists_config_includes_virtual_vocab_lists(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    db.init_db()
+    db.activate_word_review("study", source="manual", analysis={"basic_meaning": "学习"})
+
+    client = TestClient(create_app())
+    configs = client.get("/api/wordlists/config").json()
+    by_id = {c["id"]: c for c in configs}
+    assert by_id["my_vocab"]["type"] == "domain"
+    assert by_id["my_vocab"]["count"] == 1
+    assert by_id["my_mastered"]["type"] == "exclude"
+
+    assert client.get("/wordlists/my_vocab").json()["words"] == ["study"]
+
+
+def test_my_mastered_wordlist_includes_known_words(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    db.init_db()
+    db.add_known_word("apple", "2026-08-03")
+    db.activate_word_review("study", source="manual")
+
+    client = TestClient(create_app())
+    mastered = client.get("/wordlists/my_mastered").json()["words"]
+    assert "apple" in mastered
+    assert "study" not in mastered  # 未掌握的生词不在已掌握列表
+
+
+def test_wordlist_membership_intersects_only_requested_vocab_words(tmp_path, monkeypatch):
+    import json
+    import db
+    from fastapi_server import create_app
+    from fastapi.testclient import TestClient
+    from webapp.storage import wordlists as wl_storage
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / "builtin_gre.json").write_text(json.dumps({
+        "metadata": {"name": "GRE", "type": "domain", "key": "builtin_gre", "tag": "GRE", "builtin": True},
+        "words": ["salary", "study"],
+    }), encoding="utf-8")
+    (compiled / "builtin_ielts.json").write_text(json.dumps({
+        "metadata": {"name": "雅思", "type": "domain", "key": "builtin_ielts", "tag": "雅思", "builtin": True},
+        "words": ["study"],
+    }), encoding="utf-8")
+    monkeypatch.setattr(wl_storage, "COMPILED_DIR", compiled)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    db.init_db()
+    db.activate_word_review("study", source="manual")
+
+    response = TestClient(create_app()).post(
+        "/api/wordlists/membership",
+        json={"words": ["Study", "salary", "ordinary", "study"]},
+    )
+
+    assert response.status_code == 200
+    memberships = response.json()["memberships"]
+    assert set(memberships["study"]) == {"builtin_gre", "builtin_ielts", "my_vocab"}
+    assert memberships["salary"] == ["builtin_gre"]
+    assert memberships["ordinary"] == []

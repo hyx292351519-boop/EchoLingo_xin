@@ -1,0 +1,89 @@
+# 虚拟环境
+.venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 工具缓存（视频下载、字幕等）
+.cache/
+tmp/
+logs/*
+!logs/.gitkeep
+
+# Claude Code & Status
+.claude/
+.codex/
+.ccb/
+.ccb-workspace.json
+status/
+.pytest_cache/
+.pytest_tmp*/
+.tmp/
+.tmp*
+test-artifacts/
+
+# 私人资料
+资料/
+
+# 生成物（不入库，本地查看）
+output/
+!output/.gitkeep
+
+# 媒体文件
+*.mp4
+*.mp3
+*.m4a
+*.wav
+*.webm
+
+# 运行时数据库与用户数据（永不入公开库）
+vocab.db
+vocab.db-shm
+vocab.db-wal
+vocab_log.json
+vocab_log.json.bak
+resources/auth.db*
+resources/baidu_pan_jobs.db*
+resources/vocab.db*
+resources/users/
+resources/**/*.db-shm
+resources/**/*.db-wal
+
+# 敏感信息
+cookies.txt
+*_cookies.txt
+*.env
+.env
+
+# MCP / IDE 工具配置（可能含 token）
+.mcp.json
+.codegraph/
+.playwright-mcp/
+
+# 运行日志
+server.log
+server_err.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+.pytest-tmp/
+llama-cpp/
+models/
+server_*.log
+
+# ECDICT source data stays local; the ready-to-use database is distributed.
+resources/ecdict/*
+!resources/ecdict/ecdict.db
+!resources/ecdict/gloss_compact.db
+
+# Runtime user wordlists (uploaded/generated locally; never publish)
+resources/wordlists/wordlists/user/*
+!resources/wordlists/wordlists/user/.gitkeep
+resources/wordlists/wordlists/compiled/user_*.json
+
+# 本地敏感信息（订阅链接、cookies 等）
+secrets/

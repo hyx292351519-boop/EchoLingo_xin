@@ -1,0 +1,161 @@
+name: Build Windows Release Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build source package
+        id: package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          if (-not $version -or $version -eq "master") {
+            $version = "snapshot-${{ github.sha }}".Substring(0, 16)
+          }
+          $name = "EchoLingo-$version-windows"
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          $sourceArchive = Join-Path $env:RUNNER_TEMP "$name-source.zip"
+          $zip = Join-Path $env:GITHUB_WORKSPACE "$name.zip"
+          $sha = Join-Path $env:GITHUB_WORKSPACE "$name.sha256"
+
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          git archive --format=zip --output=$sourceArchive HEAD
+          Expand-Archive -LiteralPath $sourceArchive -DestinationPath $stage -Force
+          Remove-Item -LiteralPath $sourceArchive -Force
+
+          Write-Host "Installing Tesseract OCR for the portable release bundle..."
+          $winget = Get-Command winget -ErrorAction Stop
+          & $winget.Source install --id UB-Mannheim.TesseractOCR --exact --source winget `
+            --accept-package-agreements --accept-source-agreements --silent --disable-interactivity
+          if ($LASTEXITCODE -ne 0) {
+            throw "无法在构建机上安装 Tesseract（退出码 $LASTEXITCODE）"
+          }
+
+          $tesseractRoots = @(
+            (Join-Path $env:ProgramFiles "Tesseract-OCR"),
+            (Join-Path ${env:ProgramFiles(x86)} "Tesseract-OCR")
+          )
+          $tesseractSource = $tesseractRoots |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_ "tesseract.exe") } |
+            Select-Object -First 1
+          if (-not $tesseractSource) {
+            throw "找不到 winget 安装的 Tesseract-OCR 目录"
+          }
+
+          # Bundle only the runtime files needed by pytesseract: the CLI,
+          # shared libraries, English OCR data, and orientation data. This
+          # avoids shipping the training utilities and every language pack.
+          $bundleDir = Join-Path $stage "tools\tesseract"
+          $bundleTessdata = Join-Path $bundleDir "tessdata"
+          New-Item -ItemType Directory -Force -Path $bundleTessdata | Out-Null
+          Copy-Item -LiteralPath (Join-Path $tesseractSource "tesseract.exe") -Destination $bundleDir -Force
+          Get-ChildItem -LiteralPath $tesseractSource -Filter "*.dll" -File |
+            Copy-Item -Destination $bundleDir -Force
+          foreach ($dataFile in @("eng.traineddata", "osd.traineddata")) {
+            $sourceData = Join-Path $tesseractSource "tessdata\$dataFile"
+            if (-not (Test-Path -LiteralPath $sourceData)) {
+              throw "Tesseract 缺少 OCR 数据文件: $sourceData"
+            }
+            Copy-Item -LiteralPath $sourceData -Destination $bundleTessdata -Force
+          }
+          Get-ChildItem -LiteralPath $tesseractSource -File |
+            Where-Object { $_.Name -match "^(LICENSE|NOTICE|COPYING)" } |
+            Copy-Item -Destination $bundleDir -Force
+          $versionLine = (& (Join-Path $bundleDir "tesseract.exe") --version 2>$null | Select-Object -First 1)
+          @"
+          EchoLingo portable Tesseract runtime
+          $versionLine
+
+          This directory was assembled from the UB-Mannheim.TesseractOCR
+          winget package. This bundle does not change the licenses of Tesseract,
+          Leptonica, or the shared libraries it depends on. Upstream source,
+          license, and notice information is available at
+          https://github.com/tesseract-ocr/tesseract and
+          https://github.com/UB-Mannheim/tesseract/wiki.
+          "@ | Set-Content -LiteralPath (Join-Path $bundleDir "BUNDLE-NOTICE.txt") -Encoding UTF8
+          Write-Host "Bundled Tesseract runtime at $bundleDir"
+
+          Write-Host "Downloading FFmpeg essentials build for the portable release bundle..."
+          $ffmpegZip = Join-Path $env:RUNNER_TEMP "ffmpeg-release-essentials.zip"
+          & curl.exe -L --fail --silent --show-error -o $ffmpegZip "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          if ($LASTEXITCODE -ne 0) {
+            throw "FFmpeg 下载失败（退出码 $LASTEXITCODE）"
+          }
+          $ffmpegExtract = Join-Path $env:RUNNER_TEMP "ffmpeg-essentials"
+          Expand-Archive -LiteralPath $ffmpegZip -DestinationPath $ffmpegExtract -Force
+          $ffmpegRoot = Get-ChildItem -LiteralPath $ffmpegExtract -Directory | Select-Object -First 1
+          $ffmpegBin = Join-Path $ffmpegRoot.FullName "bin"
+          $ffmpegBundleDir = Join-Path $stage "tools\ffmpeg"
+          New-Item -ItemType Directory -Force -Path $ffmpegBundleDir | Out-Null
+          foreach ($exe in @("ffmpeg.exe", "ffprobe.exe")) {
+            $exeSource = Join-Path $ffmpegBin $exe
+            if (-not (Test-Path -LiteralPath $exeSource)) {
+              throw "FFmpeg 构建缺少 $exe"
+            }
+            Copy-Item -LiteralPath $exeSource -Destination $ffmpegBundleDir -Force
+          }
+          Get-ChildItem -LiteralPath $ffmpegRoot.FullName -File |
+            Where-Object { $_.Name -match "^(LICENSE|COPYING|README)" } |
+            Copy-Item -Destination $ffmpegBundleDir -Force
+          $ffmpegVersion = (& (Join-Path $ffmpegBundleDir "ffmpeg.exe") -version 2>$null | Select-Object -First 1)
+          Write-Host "Bundled FFmpeg runtime at $ffmpegBundleDir ($ffmpegVersion)"
+
+          # Bundle VC++ 2015-2022 runtime DLLs (redistributable per VS license):
+          # ctranslate2 (faster-whisper 依赖) 在未装 vcredist 的干净 Windows 上
+          # 因缺 msvcp140.dll 无法加载；后端启动时经 add_dll_directory 登记此目录。
+          $vcredistBundleDir = Join-Path $stage "tools\vcredist"
+          New-Item -ItemType Directory -Force -Path $vcredistBundleDir | Out-Null
+          foreach ($dll in @("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+                             "msvcp140_atomic_wait.dll", "concrt140.dll",
+                             "vccorlib140.dll", "vcruntime140.dll",
+                             "vcruntime140_1.dll", "vcruntime140_threads.dll")) {
+            $dllSource = Join-Path $env:SystemRoot "System32\$dll"
+            if (-not (Test-Path -LiteralPath $dllSource)) {
+              Write-Host "Runner 无 $dll（可选组件，跳过）"
+              continue
+            }
+            Copy-Item -LiteralPath $dllSource -Destination $vcredistBundleDir -Force
+          }
+          "Visual C++ Redistributable runtime files (msvcp140/vcruntime140).`r`nRedistributed under the Microsoft Visual Studio redistribution terms.`r`nhttps://learn.microsoft.com/visualstudio/releases/redistribution" |
+            Set-Content -LiteralPath (Join-Path $vcredistBundleDir "README.txt") -Encoding utf8
+          Write-Host "Bundled VC++ runtime at $vcredistBundleDir"
+
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $zip)" | Set-Content -LiteralPath $sha -Encoding ascii
+
+          "zip_path=$zip" >> $env:GITHUB_OUTPUT
+          "sha_path=$sha" >> $env:GITHUB_OUTPUT
+          Write-Host "Created $zip"
+          Write-Host "SHA256 $hash"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EchoLingo-windows-package
+          path: |
+            ${{ steps.package.outputs.zip_path }}
+            ${{ steps.package.outputs.sha_path }}
+
+      - name: Attach package to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ${{ steps.package.outputs.zip_path }}
+            ${{ steps.package.outputs.sha_path }}

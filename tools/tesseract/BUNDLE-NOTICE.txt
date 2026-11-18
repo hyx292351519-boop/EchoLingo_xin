@@ -1,0 +1,9 @@
+EchoLingo portable Tesseract runtime
+tesseract v5.4.0.20240606
+
+This directory was assembled from the UB-Mannheim.TesseractOCR
+winget package. This bundle does not change the licenses of Tesseract,
+Leptonica, or the shared libraries it depends on. Upstream source,
+license, and notice information is available at
+https://github.com/tesseract-ocr/tesseract and
+https://github.com/UB-Mannheim/tesseract/wiki.

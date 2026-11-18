@@ -1,0 +1,11 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.mdx binary
+*.mdd binary
+*.xlsx binary
+tools/**/*.exe filter=lfs diff=lfs merge=lfs -text
+tools/**/*.dll filter=lfs diff=lfs merge=lfs -text
+resources/**/*.db filter=lfs diff=lfs merge=lfs -text
