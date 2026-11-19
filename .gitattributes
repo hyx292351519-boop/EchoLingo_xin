@@ -6,6 +6,8 @@
 *.mdx binary
 *.mdd binary
 *.xlsx binary
+# Windows batch files must keep CRLF line endings
+*.bat text eol=crlf
 tools/**/*.exe filter=lfs diff=lfs merge=lfs -text
 tools/**/*.dll filter=lfs diff=lfs merge=lfs -text
 resources/**/*.db filter=lfs diff=lfs merge=lfs -text
