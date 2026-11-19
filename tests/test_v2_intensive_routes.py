@@ -127,10 +127,24 @@ def test_oral_analysis_is_persisted_and_reused_by_intensive_and_sentence_library
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
     calls = []
     analysis = {
-        "pattern_name": "take ... into account",
+        "schema": "chunks_v1",
+        "sentence_gist": "评审会把成本和质量都考虑进去。",
         "cefr_level": "B2",
-        "function_cn": "列举评估因素。",
-        "ielts_reuse": "可用于解释评价标准。",
+        "chunks": [
+            {
+                "text": "takes cost and quality into account",
+                "base_form": "take sth into account",
+                "chunk_type": "collocation",
+                "meaning_cn": "把成本和质量考虑在内",
+                "nuance": "强调决策时没有遗漏关键因素，语气客观。",
+                "collocations": ["take into account", "take sth into consideration"],
+                "scenarios": "职场或书面中说明评估标准。",
+                "examples": [
+                    {"en": "We need to take the weather into account.", "cn": "我们得把天气考虑进去。"},
+                    {"en": "Did you take traffic into account?", "cn": "你算上堵车了吗？"},
+                ],
+            }
+        ],
         "template": "X takes A, B, and C into account.",
         "template_example": "The review takes cost and quality into account.",
     }
@@ -175,7 +189,8 @@ def test_oral_analysis_is_persisted_and_reused_by_intensive_and_sentence_library
     assert second.json()["cached"] is True
     assert len(calls) == 1
     stored = db.get_v2_sentence_pattern(saved["sentence_id"])
-    assert stored["analysis"]["pattern_name"] == "take ... into account"
+    assert stored["analysis"]["schema"] == "chunks_v1"
+    assert stored["analysis"]["chunks"][0]["base_form"] == "take sth into account"
     assert stored["pattern_template"] == analysis["template"]
     intensive = client.get(f"/api/v2/lessons/{lesson['id']}/intensive").json()
     assert intensive["sentences"][0]["sentence_id"] == saved["sentence_id"]
@@ -202,6 +217,130 @@ def test_oral_analysis_is_persisted_and_reused_by_intensive_and_sentence_library
     updated = db.get_v2_sentence_pattern(saved["sentence_id"])
     assert updated["pattern_template"] == analysis["template"]
     assert updated["scenario_cn"] == ""
+
+
+def _fake_ai_client(payload, calls):
+    def create(**kwargs):
+        calls.append(kwargs)
+        message = SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+
+def test_chunk_analysis_aligns_chunks_to_original_sentence(monkeypatch):
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    sentence = "To be honest, I\u2019ve been meaning to get back into running."
+    example = {"en": "e1", "cn": "c1"}
+    payload = {
+        "sentence_gist": "说实话，我一直想重新开始跑步。",
+        "cefr_level": "b2",
+        "chunks": [
+            # 模型改了撇号和大小写：应对齐回原句片段
+            {"text": "i've been  meaning to", "chunk_type": "sentence_frame",
+             "examples": [example, example, example], "collocations": ["a", "b", "c", "d", "e"]},
+            {"text": "To be honest", "chunk_type": "unknown_type"},
+            # 原句里不存在：应被丢弃
+            {"text": "go jogging", "chunk_type": "collocation"},
+            # 重复：应被去重
+            {"text": "to be honest", "chunk_type": "discourse_marker"},
+        ],
+        "template": "To be honest, I've been meaning to [do sth].",
+    }
+    calls = []
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, calls))
+    data = TestClient(create_app()).post("/api/oral-analysis", json={"english": sentence}).json()
+
+    assert data["schema"] == "chunks_v1"
+    assert data["cefr_level"] == "B2"
+    assert [chunk["text"] for chunk in data["chunks"]] == ["To be honest", "I\u2019ve been meaning to"]
+    assert data["chunks"][0]["chunk_type"] == "fixed_expression"
+    assert data["chunks"][0]["base_form"] == "To be honest"
+    assert len(data["chunks"][1]["examples"]) == 2
+    assert len(data["chunks"][1]["collocations"]) == 4
+    assert "语块" in calls[0]["messages"][0]["content"]
+    assert sentence in calls[0]["messages"][0]["content"]
+
+
+def test_chunk_analysis_rejects_response_without_matching_chunks(monkeypatch):
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    payload = {"chunks": [{"text": "nothing like the sentence"}]}
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, []))
+    response = TestClient(create_app()).post(
+        "/api/oral-analysis", json={"english": "The review takes cost into account."}
+    )
+    assert response.status_code == 500
+    assert "语块" in response.json()["error"]
+
+
+def test_chunk_analysis_tolerates_fences_and_disables_deepseek_thinking(monkeypatch):
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        content = '```json\n{"chunks": [{"text": "takes cost into account"}]}\n```'
+        message = SimpleNamespace(content=content)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
+    monkeypatch.setattr(ai.ai_config, "client", SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    monkeypatch.setattr(ai.ai_config, "AI_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setattr(ai.ai_config, "AI_MODEL", "deepseek-v4-flash")
+    response = TestClient(create_app()).post(
+        "/api/oral-analysis", json={"english": "The review takes cost into account."}
+    )
+    assert response.status_code == 200
+    assert response.json()["chunks"][0]["text"] == "takes cost into account"
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_chunk_analysis_reports_empty_truncated_output(monkeypatch):
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    def create(**kwargs):
+        message = SimpleNamespace(content="")
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="length")])
+
+    monkeypatch.setattr(ai.ai_config, "client", SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    response = TestClient(create_app()).post("/api/oral-analysis", json={"english": "Hello there."})
+    assert response.status_code == 500
+    assert "截断" in response.json()["error"]
+
+
+def test_legacy_sentence_analysis_cache_is_regenerated_as_chunks(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    text = "The review takes cost into account."
+    sentence = db.upsert_v2_sentence(text)
+    db.save_v2_sentence_analysis(sentence["id"], {
+        "pattern_name": "take ... into account",
+        "template": "X takes A into account.",
+    })
+    calls = []
+    payload = {"chunks": [{"text": "takes cost into account", "chunk_type": "collocation"}]}
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, calls))
+    client = TestClient(create_app())
+
+    first = client.post("/api/oral-analysis", json={"sentence_id": sentence["id"]}).json()
+    second = client.post("/api/oral-analysis", json={"sentence_id": sentence["id"]}).json()
+
+    assert first["cached"] is False and first["schema"] == "chunks_v1"
+    assert second["cached"] is True
+    assert len(calls) == 1
+    # 新结果没有 template 时，保留原有句式骨架供练习使用
+    assert db.get_v2_sentence_pattern(sentence["id"])["pattern_template"] == "X takes A into account."
 
 
 def test_hint_prompt_prioritizes_all_highlighted_vocabulary(monkeypatch):

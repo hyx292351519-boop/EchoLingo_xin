@@ -2839,13 +2839,13 @@
           <div class="pattern-example"><span class="pattern-ex-label">例句</span>${escapeHtml(matched.example)}</div>
           <div class="pattern-ielts-tip"><span class="pattern-ex-label">雅思提示</span>${escapeHtml(matched.ielts_tip)}</div>
         </div>
-        <button class="gen-oral-btn" data-gen-oral="${idx}">AI 深度解析</button>`;
+        <button class="gen-oral-btn" data-gen-oral="${idx}">AI 语块解析</button>`;
       }
       // Priority 3: Fallback to AI button
       return `<div class="spoken" data-oral-text="${idx}">
         <span class="oral-content" style="color:var(--muted);font-size:13px">未匹配到句式模板</span>
       </div>
-      <button class="gen-oral-btn" data-gen-oral="${idx}">生成口语解析</button>`;
+      <button class="gen-oral-btn" data-gen-oral="${idx}">AI 语块解析</button>`;
     }
 
     function renderWordChips(analysis, idx) {
@@ -3545,27 +3545,42 @@
       } catch { resultEl.textContent = '无法连接 localhost:5173，请先启动 server.py'; }
     }
 
+    const CHUNK_TYPE_LABELS = {
+      collocation: '固定搭配', phrasal_verb: '短语动词', fixed_expression: '固定表达',
+      sentence_frame: '句子框架', discourse_marker: '话语标记', hedge_softener: '缓和语气',
+    };
+
     function renderOralModules(data) {
       if (data.error) return `<span style="color:var(--danger)">${escapeHtml(data.error)}</span>`;
+      const chunks = Array.isArray(data.chunks) ? data.chunks : [];
       const lvl = escapeHtml(data.cefr_level || '');
+      const chunkModules = chunks.map((chunk, index) => {
+        const baseForm = chunk.base_form && chunk.base_form !== chunk.text ? chunk.base_form : '';
+        const examples = Array.isArray(chunk.examples) ? chunk.examples : [];
+        const collocations = Array.isArray(chunk.collocations) ? chunk.collocations : [];
+        return `<div class="oral-module">
+          <div class="oral-module-label">语块 ${index + 1} · ${escapeHtml(CHUNK_TYPE_LABELS[chunk.chunk_type] || chunk.chunk_type || '表达')}</div>
+          <div class="oral-module-body">
+            <strong>${escapeHtml(chunk.text || '')}</strong>${baseForm ? ` <span style="color:var(--muted)">${escapeHtml(baseForm)}</span>` : ''}
+            ${chunk.meaning_cn ? `<div>${escapeHtml(chunk.meaning_cn)}</div>` : ''}
+            ${chunk.nuance ? `<div><b>语感：</b>${escapeHtml(chunk.nuance)}</div>` : ''}
+            ${collocations.length ? `<div><b>常见搭配：</b>${collocations.map(escapeHtml).join(' / ')}</div>` : ''}
+            ${chunk.scenarios ? `<div><b>使用场景：</b>${escapeHtml(chunk.scenarios)}</div>` : ''}
+            ${examples.map(example => `<div class="oral-example">${escapeHtml(example.en || '')}${example.cn ? ` — ${escapeHtml(example.cn)}` : ''}</div>`).join('')}
+          </div>
+        </div>`;
+      }).join('');
       return `<div class="oral-modules">
         <div class="oral-module">
-          <div class="oral-module-label">A · 句式识别</div>
+          <div class="oral-module-label">整句大意</div>
           <div class="oral-module-body">
-            ${escapeHtml(data.pattern_name || '—')}
+            ${escapeHtml(data.sentence_gist || '—')}
             ${lvl ? `<span class="oral-cefr-badge">${lvl}</span>` : ''}
           </div>
         </div>
+        ${chunkModules}
         <div class="oral-module">
-          <div class="oral-module-label">B · 表达功能</div>
-          <div class="oral-module-body">${escapeHtml(data.function_cn || '—')}</div>
-        </div>
-        <div class="oral-module">
-          <div class="oral-module-label">C · 雅思复用</div>
-          <div class="oral-module-body">${escapeHtml(data.ielts_reuse || '—')}</div>
-        </div>
-        <div class="oral-module">
-          <div class="oral-module-label">D · 迁移模板</div>
+          <div class="oral-module-label">整句骨架</div>
           <div class="oral-module-body">
             <code class="oral-template-code">${escapeHtml(data.template || '—')}</code>
             ${data.template_example ? `<div class="oral-example">${escapeHtml(data.template_example)}</div>` : ''}

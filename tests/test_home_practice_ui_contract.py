@@ -101,7 +101,7 @@ def test_sentence_course_filter_is_searchable_dropdown():
 def test_sentence_rows_merge_analysis_and_practice_in_one_expanded_flow():
     assert "toggleSentenceArchive" in INDEX_HTML
     assert "openSentenceAnalysis" in INDEX_HTML
-    assert "AI 句式分析" in INDEX_HTML
+    assert "AI 语块解析" in INDEX_HTML
     assert 'class="sentence-analysis-trigger"' in INDEX_HTML
     assert "openSentencePatternPractice" not in INDEX_HTML
     assert "renderSentencePatternPractice(sentence)}`" in INDEX_HTML

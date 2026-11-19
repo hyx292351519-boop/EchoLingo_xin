@@ -254,22 +254,77 @@ PRACTICE_EXAMPLE_PROMPT = """
 }}
 """
 
-# ── 口语解析按需生成（/api/oral-analysis 路由）──────────────────
-ORAL_ANALYSIS_PROMPT = """你是雅思口语语法教练，专注句式和语法分析。
+# ── 语块分析按需生成（/api/oral-analysis 路由）──────────────────
+# 输出结构版本号；路由据此判断缓存是否为旧版句式分析，前端据此选择渲染方式。
+CHUNK_ANALYSIS_SCHEMA = "chunks_v1"
+CHUNK_TYPES = (
+    "collocation",
+    "phrasal_verb",
+    "fixed_expression",
+    "sentence_frame",
+    "discourse_marker",
+    "hedge_softener",
+)
 
-英文句子：{english}
+CHUNK_ANALYSIS_PROMPT = """\
+你是一名英语语块（lexical chunks）教练，服务对象是以中文为母语、想说出地道英语的学习者。
+你的目标不是分析语法，而是帮助学习者看懂：母语者是用哪些现成的"表达块"把这句话拼起来的，以及每个块背后的语感。
 
-按以下4个模块分析，严格输出JSON，不要任何额外内容：
+英文原句：{english}
+
+## 第一步：切分语块
+按自然的表达意义，从原句中挑出 2–5 个最有学习价值的语块（句子很短时可以只有 1 个），按在原句中出现的顺序排列。
+
+什么算有学习价值：
+- 固定搭配、短语动词、习语或固定说法
+- 母语者常用的句子框架，比如 "The thing is, ..."、"It's not that ..., it's just ..."
+- 体现语气、态度和分寸的表达，比如缓和、强调、委婉、让步
+
+不要这样做：
+- 不要逐词拆分，也不要把整句切成碎片
+- 不要单独挑出 the、is、very 这类普通功能词，也不要挑学习者一看就懂的基础词
+- 不要把短语写成词典条目，不要罗列多个义项，只解释它在本句中的用法
+- 不要用语法术语分析句子成分
+
+## 第二步：逐个讲解
+对每个语块：
+1. text：从原句逐字照抄这个语块的连续片段，大小写、标点和词形都不能改。如果表达中间夹了别的词（如 take all of this into account），就把整段连同中间的词一起照抄。
+2. base_form：写出能迁移到其他句子的通用形式，用 sb / sth / doing 表示可以替换的部分。
+3. chunk_type：只能从 collocation、phrasal_verb、fixed_expression、sentence_frame、discourse_marker、hedge_softener 中选一个。
+4. meaning_cn：写出它在本句中的自然中文意思，要像中文母语者平时会说的话，不要逐词硬译。
+5. nuance：用 1–2 句话说明母语者为什么在这里用它：传达了什么态度或意图，有什么潜台词，和更直白的说法相比差在哪里。这一项最重要，不能写成"表示……的意思"这种词典式解释。
+6. collocations：给出 2–4 个高频、真实的搭配或变体，用英文短语写。
+7. scenarios：用一句中文说明它通常出现在什么场合、对谁说、什么语域（口语、职场、书面等）。
+8. examples：给出 2 个自然例句，必须换到和原句不同的话题，两个例句的话题也要不同。例句要像真实对话或写作中会出现的句子，并附中文翻译。
+
+## 第三步：整句
+- sentence_gist：用 1–2 句中文概括整句的意思，以及说话人的态度或意图。
+- cefr_level：整句表达的 CEFR 难度，只能是 A2、B1、B2、C1、C2 之一。
+- template：给出整句可复用的骨架，用 [...] 标出可替换的部分。
+- template_example：用这个骨架在新话题上造一句话。
+
+## 输出
+只输出合法 JSON，不要 markdown，也不要任何额外文字：
 {{
-  "pattern_name": "语法结构名称（如：It强调句、倒装条件句、混合条件句等）",
-  "cefr_level": "CEFR级别：B1/B2/C1；无复杂结构填 B1",
-  "function_cn": "【B·表达功能】这个结构在口语中承担的修辞功能，说明为什么用它，2句以内",
-  "ielts_reuse": "【C·雅思复用】适用Part几、什么题型、Band几信号；无复用价值时说原因，2句以内",
-  "template": "【D·模板】用[...]标注可替换部分的填空模板",
-  "template_example": "【D·示例】用不同话题造的示例句，1句"
+  "schema": "chunks_v1",
+  "sentence_gist": "",
+  "cefr_level": "B1",
+  "chunks": [
+    {{
+      "text": "",
+      "base_form": "",
+      "chunk_type": "",
+      "meaning_cn": "",
+      "nuance": "",
+      "collocations": [""],
+      "scenarios": "",
+      "examples": [{{"en": "", "cn": ""}}]
+    }}
+  ],
+  "template": "",
+  "template_example": ""
 }}
-
-规则：无复杂结构时 pattern_name 写"基础简单句"，cefr_level 写"B1"，template 写原句的简化结构。不分析发音，不分析词汇。"""
+"""
 
 # ── 连读/语音变化分析（analyze-connected-speech 路由）────────────
 CONNECTED_SPEECH_PROMPT = """英语语音学 JSON 分析。句子：{sentence}  IPA参考：{phonetics}

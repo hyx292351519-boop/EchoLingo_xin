@@ -13,8 +13,10 @@ from fastapi.responses import JSONResponse
 from prompts import (
     CONNECTED_SPEECH_PROMPT,
     HINT_PROMPT,
+    CHUNK_ANALYSIS_PROMPT,
+    CHUNK_ANALYSIS_SCHEMA,
+    CHUNK_TYPES,
     LISTENING_RETELL_PROMPT,
-    ORAL_ANALYSIS_PROMPT,
     CORRECTION_PROMPT,
     PRACTICE_EXAMPLE_PROMPT,
     WORD_ANALYSIS_PROMPT,
@@ -599,7 +601,107 @@ async def batch_phonetics(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-# ── Phase 6D: /api/oral-analysis ─────────────────────────────────────────────
+# ── Phase 6D: /api/oral-analysis（语块分析）────────────────────────────────
+
+_CHUNK_LIMIT = 5
+_CHUNK_EXAMPLE_LIMIT = 2
+_CHUNK_COLLOCATION_LIMIT = 4
+_CEFR_LEVELS = ("A2", "B1", "B2", "C1", "C2")
+_APOSTROPHES = "'\u2019\u2018"
+
+
+def _clean_text(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _locate_chunk(sentence: str, chunk_text: str) -> str:
+    """Return the exact span of ``chunk_text`` inside ``sentence``, or "".
+
+    The model sometimes alters case, whitespace or apostrophe style; match
+    tolerantly but always return the original sentence's own characters so
+    the frontend can highlight it verbatim.
+    """
+    tokens = chunk_text.split()
+    if not tokens:
+        return ""
+    parts = []
+    for token in tokens:
+        escaped = "".join(
+            f"[{re.escape(_APOSTROPHES)}]" if ch in _APOSTROPHES else re.escape(ch)
+            for ch in token
+        )
+        parts.append(escaped)
+    match = re.search(r"\s+".join(parts), sentence, flags=re.IGNORECASE)
+    return match.group(0) if match else ""
+
+
+def _parse_chunk_analysis_json(choice) -> dict:
+    """Parse the model's JSON reply, tolerating code fences and surrounding text."""
+    finish_reason = str(getattr(choice, "finish_reason", "") or "").lower()
+    text = str(getattr(choice.message, "content", "") or "").strip()
+    if not text:
+        if finish_reason == "length":
+            raise ValueError("AI 输出被截断（返回为空），请重试")
+        raise ValueError("AI 未返回内容，请重试")
+    start, end = text.find("{"), text.rfind("}")
+    try:
+        if start < 0 or end <= start:
+            raise ValueError
+        parsed = json.loads(text[start:end + 1])
+    except ValueError:
+        if finish_reason == "length":
+            raise ValueError("AI 输出被截断，请重试") from None
+        raise ValueError("AI 返回的不是有效 JSON，请重试") from None
+    if not isinstance(parsed, dict):
+        raise ValueError("AI 返回格式异常，请重试")
+    return parsed
+
+
+def _normalize_chunk_analysis(raw: dict, sentence: str) -> dict:
+    """Validate the AI chunk analysis and keep only well-formed, verbatim chunks."""
+    chunks = []
+    for item in raw.get("chunks") or []:
+        if not isinstance(item, dict):
+            continue
+        text = _locate_chunk(sentence, _clean_text(item.get("text")))
+        if not text or any(chunk["text"] == text for chunk in chunks):
+            continue
+        chunk_type = _clean_text(item.get("chunk_type")).lower()
+        examples = []
+        for example in item.get("examples") or []:
+            if isinstance(example, dict):
+                en, cn = _clean_text(example.get("en")), _clean_text(example.get("cn"))
+            else:
+                en, cn = _clean_text(example), ""
+            if en:
+                examples.append({"en": en, "cn": cn})
+        chunks.append({
+            "text": text,
+            "base_form": _clean_text(item.get("base_form")) or text,
+            "chunk_type": chunk_type if chunk_type in CHUNK_TYPES else "fixed_expression",
+            "meaning_cn": _clean_text(item.get("meaning_cn")),
+            "nuance": _clean_text(item.get("nuance")),
+            "collocations": [
+                c for c in (_clean_text(x) for x in (item.get("collocations") or []) if isinstance(x, str)) if c
+            ][:_CHUNK_COLLOCATION_LIMIT],
+            "scenarios": _clean_text(item.get("scenarios")),
+            "examples": examples[:_CHUNK_EXAMPLE_LIMIT],
+        })
+        if len(chunks) >= _CHUNK_LIMIT:
+            break
+    if not chunks:
+        raise ValueError("AI 未返回与原句匹配的语块")
+    chunks.sort(key=lambda chunk: sentence.find(chunk["text"]))
+    cefr = _clean_text(raw.get("cefr_level")).upper()
+    return {
+        "schema": CHUNK_ANALYSIS_SCHEMA,
+        "sentence_gist": _clean_text(raw.get("sentence_gist")),
+        "cefr_level": cefr if cefr in _CEFR_LEVELS else "B1",
+        "chunks": chunks,
+        "template": _clean_text(raw.get("template")),
+        "template_example": _clean_text(raw.get("template_example")),
+    }
+
 
 @router.post("/api/oral-analysis")
 async def oral_analysis(request: Request):
@@ -626,20 +728,26 @@ async def oral_analysis(request: Request):
     if sentence_id is not None and not force:
         cached_pattern = db.get_v2_sentence_pattern(sentence_id)
         cached_analysis = (cached_pattern or {}).get("analysis") or {}
-        if cached_analysis:
+        # 旧版句式分析（无 schema）视为未缓存，点击时重新生成语块分析
+        if cached_analysis.get("schema") == CHUNK_ANALYSIS_SCHEMA:
             return {**cached_analysis, "cached": True, "sentence_id": sentence_id}
+    completion_kwargs = {
+        "model": ai_config.AI_MODEL,
+        "messages": [{"role": "user", "content": CHUNK_ANALYSIS_PROMPT.format(english=english)}],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.3,
+        "max_tokens": 3000,
+    }
+    # DeepSeek V4 默认开启思考，推理 token 会挤占 max_tokens，导致正文为空
+    if (
+        "api.deepseek.com" in str(ai_config.AI_BASE_URL or "").lower()
+        and str(ai_config.AI_MODEL).lower().startswith("deepseek-v4")
+    ):
+        completion_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     try:
-        resp = await run_in_threadpool(
-            ai_config.client.chat.completions.create,
-            model=ai_config.AI_MODEL,
-            messages=[{"role": "user", "content": ORAL_ANALYSIS_PROMPT.format(english=english)}],
-            response_format={"type": "json_object"},
-            temperature=0.4,
-            max_tokens=1000,
-        )
-        analysis = json.loads(resp.choices[0].message.content)
-        if not isinstance(analysis, dict):
-            raise ValueError("AI oral analysis must be an object")
+        resp = await run_in_threadpool(ai_config.client.chat.completions.create, **completion_kwargs)
+        raw = _parse_chunk_analysis_json(resp.choices[0])
+        analysis = _normalize_chunk_analysis(raw, english)
         if persist and sentence_id is not None:
             db.save_v2_sentence_analysis(sentence_id, analysis)
         return {**analysis, "cached": False, "sentence_id": sentence_id}

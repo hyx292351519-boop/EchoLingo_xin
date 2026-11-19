@@ -500,6 +500,28 @@
     .oral-module { padding: 10px 11px; border-radius: 8px; background: #f2f5f0; line-height: 1.6; }
     .oral-module-label { display: block; margin-bottom: 4px; color: var(--brand-dark); font-size: 11px; font-weight: 850; letter-spacing: .04em; }
     .oral-template { display: block; margin-top: 5px; padding: 6px 8px; border-radius: 6px; background: white; color: #6b4f18; }
+    .chunk-analysis { display: grid; gap: 10px; margin-top: 10px; }
+    .chunk-overview { padding: 10px 12px; border-radius: 8px; background: #f2f5f0; line-height: 1.65; }
+    .chunk-overview-sentence { font-size: 15px; line-height: 1.9; }
+    .chunk-overview-gist { margin-top: 6px; color: var(--muted); }
+    .chunk-mark { padding: 1px 3px; border-radius: 4px; background: #fbeccb; color: inherit; box-shadow: inset 0 -2px 0 #e2b65a; }
+    .chunk-mark sup { margin-left: 2px; color: #8a6418; font-size: 10px; font-weight: 800; }
+    .chunk-cefr { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #e7f1e9; color: var(--brand-dark); font-size: 11px; font-weight: 800; vertical-align: middle; }
+    .chunk-card { padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px; background: white; line-height: 1.65; }
+    .chunk-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-bottom: 6px; }
+    .chunk-index { color: #8a6418; font-size: 12px; font-weight: 850; }
+    .chunk-text { font-size: 15px; font-weight: 800; }
+    .chunk-base { color: var(--muted); font-size: 13px; }
+    .chunk-type { padding: 0 7px; border-radius: 999px; background: #edf3ed; color: var(--brand-dark); font-size: 11px; font-weight: 800; }
+    .chunk-meaning { font-weight: 700; }
+    .chunk-nuance { margin: 7px 0; padding: 7px 10px; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; background: #fff9e9; }
+    .chunk-field { margin-top: 5px; }
+    .chunk-label { display: inline-block; min-width: 4.5em; margin-right: 6px; color: var(--brand-dark); font-size: 11px; font-weight: 850; letter-spacing: .04em; }
+    .chunk-collocations { display: inline-flex; flex-wrap: wrap; gap: 5px; vertical-align: middle; }
+    .chunk-collocations code { padding: 1px 6px; border-radius: 5px; background: #f2f5f0; font-size: 12.5px; }
+    .chunk-examples { margin: 4px 0 0; padding-left: 18px; }
+    .chunk-examples li { margin-bottom: 4px; }
+    .chunk-example-cn { display: block; color: var(--muted); font-size: 13px; }
     .practice-hint { display: none; margin-bottom: 10px; padding: 9px 11px; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; background: #fff9e9; line-height: 1.6; }
     .practice-hint.open { display: block; }
     .practice-input-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: stretch; gap: 8px; margin-top: 9px; }
@@ -914,10 +936,10 @@
             </section>
 
             <section class="v1-module" data-v1-module="oral-expression">
-              <div class="v1-module-head"><h3>③ 口语表达解析</h3><span class="v1-module-kicker">雅思复用</span></div>
+              <div class="v1-module-head"><h3>③ 语块解析</h3><span class="v1-module-kicker">地道表达</span></div>
               <div class="v1-module-body">
-                <div class="module-actions"><button class="primary-action" type="button" data-generate-oral="${sentence.key}" data-force="${oral ? 'true' : 'false'}">${oral ? '重新解析' : 'AI 深度解析'}</button></div>
-                <div data-oral-result="${sentence.key}">${oral ? renderOralAnalysis(oral, sentence.key) : '<div class="filter-note">识别句式、表达功能、雅思复用场景和迁移模板。</div>'}</div>
+                <div class="module-actions"><button class="primary-action" type="button" data-generate-oral="${sentence.key}" data-force="${isChunkAnalysis(oral) ? 'true' : 'false'}">${isChunkAnalysis(oral) ? '重新解析' : 'AI 语块解析'}</button></div>
+                <div data-oral-result="${sentence.key}">${oral ? renderOralAnalysis(oral, sentence.key) : '<div class="filter-note">按自然意义拆出值得学的语块，讲清中文意思、母语者语感、常见搭配和可迁移例句。</div>'}</div>
               </div>
             </section>
 
@@ -1558,15 +1580,79 @@
       });
     }
 
+    const CHUNK_TYPE_LABELS = {
+      collocation: '固定搭配',
+      phrasal_verb: '短语动词',
+      fixed_expression: '固定表达',
+      sentence_frame: '句子框架',
+      discourse_marker: '话语标记',
+      hedge_softener: '缓和语气',
+    };
+
+    function isChunkAnalysis(data) {
+      return Boolean(data && data.schema === 'chunks_v1' && Array.isArray(data.chunks));
+    }
+
+    function renderChunkHighlightedSentence(text, chunks) {
+      const ranges = [];
+      chunks.forEach((chunk, index) => {
+        const start = text.indexOf(String(chunk.text || ''));
+        if (!chunk.text || start < 0) return;
+        const end = start + chunk.text.length;
+        if (ranges.some(range => start < range.end && end > range.start)) return;
+        ranges.push({start, end, index});
+      });
+      ranges.sort((a, b) => a.start - b.start);
+      let cursor = 0;
+      let html = '';
+      for (const range of ranges) {
+        html += escapeHtml(text.slice(cursor, range.start));
+        html += `<mark class="chunk-mark">${escapeHtml(text.slice(range.start, range.end))}<sup>${range.index + 1}</sup></mark>`;
+        cursor = range.end;
+      }
+      return html + escapeHtml(text.slice(cursor));
+    }
+
+    function chunkSpeakButton(text, label) {
+      return `<button class="practice-sentence-speak" type="button" data-speak-example="${encodeURIComponent(text)}" aria-label="${escapeHtml(label)}">🔊</button>`;
+    }
+
+    function renderChunkCard(chunk, index, key) {
+      const collocations = Array.isArray(chunk.collocations) ? chunk.collocations : [];
+      const examples = Array.isArray(chunk.examples) ? chunk.examples : [];
+      const baseForm = chunk.base_form && chunk.base_form !== chunk.text ? chunk.base_form : '';
+      return `<div class="chunk-card">
+        <div class="chunk-card-head">
+          <span class="chunk-index">语块 ${index + 1}</span>
+          <span class="chunk-text">${escapeHtml(chunk.text)}</span>
+          ${baseForm ? `<span class="chunk-base">${escapeHtml(baseForm)}</span>` : ''}
+          <span class="chunk-type">${escapeHtml(CHUNK_TYPE_LABELS[chunk.chunk_type] || chunk.chunk_type || '表达')}</span>
+          ${chunkSpeakButton(baseForm || chunk.text, '朗读语块')}
+        </div>
+        ${chunk.meaning_cn ? `<div class="chunk-meaning">${escapeHtml(chunk.meaning_cn)}</div>` : ''}
+        ${chunk.nuance ? `<div class="chunk-nuance"><span class="chunk-label">语感</span>${escapeHtml(chunk.nuance)}</div>` : ''}
+        ${collocations.length ? `<div class="chunk-field"><span class="chunk-label">常见搭配</span><span class="chunk-collocations">${collocations.map(item => `<code>${escapeHtml(item)}</code>`).join('')}</span></div>` : ''}
+        ${chunk.scenarios ? `<div class="chunk-field"><span class="chunk-label">使用场景</span>${escapeHtml(chunk.scenarios)}</div>` : ''}
+        ${examples.length ? `<div class="chunk-field"><span class="chunk-label">迁移例句</span><ul class="chunk-examples">${examples.map(example => `<li>${linkifyEnglish(example.en, key)} ${chunkSpeakButton(example.en, '朗读例句')}${example.cn ? `<span class="chunk-example-cn">${escapeHtml(example.cn)}</span>` : ''}</li>`).join('')}</ul></div>` : ''}
+      </div>`;
+    }
+
     function renderOralAnalysis(data = {}, key = 0) {
       if (data.error) return `<div class="filter-note">${escapeHtml(data.error)}</div>`;
+      if (!isChunkAnalysis(data)) {
+        return '<div class="filter-note">这句保存的是旧版句式分析。点击“AI 语块解析”生成新的语块讲解。</div>';
+      }
+      const sentence = sentenceByKey(key);
+      const sentenceText = String(sentence?.text || '');
       const templateText = String(data.template || '');
       const exampleText = String(data.template_example || '');
-      return `<div class="oral-modules">
-        <div class="oral-module"><span class="oral-module-label">A · 句式识别</span>${escapeHtml(data.pattern_name || '基础简单句')} · ${escapeHtml(data.cefr_level || 'B1')}</div>
-        <div class="oral-module"><span class="oral-module-label">B · 表达功能</span>${escapeHtml(data.function_cn || '暂无说明')}</div>
-        <div class="oral-module"><span class="oral-module-label">C · 雅思复用</span>${escapeHtml(data.ielts_reuse || '暂无说明')}</div>
-        <div class="oral-module"><span class="oral-module-label">D · 迁移模板</span><code class="oral-template">${templateText ? linkifyEnglish(templateText, key) : '暂无模板'}</code>${templateText ? `<button class="practice-sentence-speak" type="button" data-speak-example="${encodeURIComponent(templateText)}" aria-label="朗读模板">🔊 朗读</button>` : ''}${exampleText ? `<div style="margin-top:6px">${linkifyEnglish(exampleText, key)} <button class="practice-sentence-speak" type="button" data-speak-example="${encodeURIComponent(exampleText)}" aria-label="朗读示例">🔊 朗读</button></div>` : ''}</div>
+      return `<div class="chunk-analysis">
+        <div class="chunk-overview">
+          ${sentenceText ? `<div class="chunk-overview-sentence">${renderChunkHighlightedSentence(sentenceText, data.chunks)}</div>` : ''}
+          ${data.sentence_gist || data.cefr_level ? `<div class="chunk-overview-gist">${escapeHtml(data.sentence_gist || '')}${data.cefr_level ? `<span class="chunk-cefr">${escapeHtml(data.cefr_level)}</span>` : ''}</div>` : ''}
+        </div>
+        ${data.chunks.map((chunk, index) => renderChunkCard(chunk, index, key)).join('')}
+        ${templateText ? `<div class="oral-module"><span class="oral-module-label">整句骨架</span><code class="oral-template">${linkifyEnglish(templateText, key)}</code>${exampleText ? `<div style="margin-top:6px">${linkifyEnglish(exampleText, key)} ${chunkSpeakButton(exampleText, '朗读示例')}</div>` : ''}</div>` : ''}
       </div>`;
     }
 
@@ -1574,7 +1660,7 @@
       const sentence = sentenceByKey(key);
       const result = document.querySelector(`[data-oral-result="${key}"]`);
       if (!sentence || !result) return null;
-      result.innerHTML = '<div class="filter-note">AI 正在识别句式和复用场景…</div>';
+      result.innerHTML = '<div class="filter-note">AI 正在拆分语块、讲解语感…</div>';
       try {
         const response = await eltCredits.billableFetch('oral_analysis', '/api/oral-analysis', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1586,7 +1672,7 @@
           }),
         });
         const data = await response.json();
-        if (!response.ok || data.error) throw new Error(data.error || '口语解析失败');
+        if (!response.ok || data.error) throw new Error(data.error || '语块解析失败');
         if (data.sentence_id) sentence.sentence_id = Number(data.sentence_id);
         sentence.oral_analysis = data;
         oralAnalysisCache.set(Number(key), data);
@@ -1598,7 +1684,7 @@
         }
         return data;
       } catch (error) {
-        result.innerHTML = `<div class="filter-note">口语解析失败：${escapeHtml(error.message)}</div>`;
+        result.innerHTML = `<div class="filter-note">语块解析失败：${escapeHtml(error.message)}</div>`;
         return null;
       }
     }
