@@ -377,6 +377,19 @@
     .v1-module-head h3 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 16px; }
     .v1-module-kicker { color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
     .v1-module-body { padding: 12px; }
+    .note-chip { background: #fff4d6; color: #7a5a14; }
+    .note-list { display: grid; gap: 8px; margin-bottom: 10px; }
+    .note-item { padding: 9px 11px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; background: white; }
+    .note-content { white-space: pre-wrap; word-break: break-word; line-height: 1.65; }
+    .note-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .note-tag { padding: 0 7px; border-radius: 999px; background: #edf3ed; color: var(--brand-dark); font-size: 11px; font-weight: 700; }
+    .note-actions { display: inline-flex; gap: 4px; margin-left: auto; }
+    .note-actions button { min-height: 26px; padding: 2px 8px; font-size: 12px; }
+    .note-form { display: grid; gap: 7px; }
+    .note-form textarea { width: 100%; min-height: 72px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; line-height: 1.6; resize: vertical; }
+    .note-form-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+    .note-form-row input { flex: 1 1 180px; min-width: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+    .note-empty, .note-status { color: var(--muted); font-size: 13px; }
     .pronunciation-controls, .speed-controls, .module-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
     .sentence-play { border-color: var(--brand); background: var(--brand); color: white; }
     #intensive-youtube-host {
@@ -701,6 +714,9 @@
       return String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
     }
     const reviewBookWords = new Set();
+    // 句子笔记：sentence.key -> [note]；正在编辑的笔记 id
+    const sentenceNotes = new Map();
+    const editingNoteIds = new Set();
     const aiRecommendedWords = new Set();
     const aiRecommendedSentences = new Set();
     let lessonAiRecommendation = null;
@@ -884,7 +900,7 @@
             <span class="sentence-number">${documentIndex + 1}</span>
             <span class="sentence-copy">${renderSentenceSummary(sentence)}
               ${sentence.translation ? `<span class="sentence-zh">${escapeHtml(sentence.translation)}</span>` : ''}
-              <span class="sentence-meta">${planningHtml}${alignmentHtml}${tagHtml}</span>
+              <span class="sentence-meta">${planningHtml}${alignmentHtml}${tagHtml}${renderNoteChip(sentence.key)}</span>
             </span>
             <span class="expand-mark">${open ? '−' : '+'}</span>
           </button>
@@ -957,6 +973,21 @@
                 <div class="practice-result" data-practice-result="${sentence.key}"></div>
                 <div class="module-actions"><button type="button" data-toggle-practice-history="${sentence.key}">📚 历史记录</button></div>
                 <div class="practice-history-panel" data-practice-history="${sentence.key}" hidden></div>
+              </div>
+            </section>
+
+            <section class="v1-module" data-v1-module="notes">
+              <div class="v1-module-head"><h3>⑤ 我的笔记</h3><span class="v1-module-kicker" data-notes-count="${sentence.key}">${noteCountLabel(sentence.key)}</span></div>
+              <div class="v1-module-body">
+                <div data-notes-body="${sentence.key}">${renderSentenceNotesList(sentence.key)}</div>
+                <div class="note-form">
+                  <textarea data-note-input="${sentence.key}" placeholder="记下你对这句的理解、疑问或想记住的表达…（Ctrl + Enter 保存）"></textarea>
+                  <div class="note-form-row">
+                    <input type="text" data-note-tags="${sentence.key}" placeholder="标签，用逗号分隔，如：表达, 易错">
+                    <button class="primary-action" type="button" data-save-note="${sentence.key}">保存笔记</button>
+                  </div>
+                  <div class="note-status" data-note-status="${sentence.key}"></div>
+                </div>
               </div>
             </section>
 
@@ -2439,15 +2470,194 @@
       });
     }
 
+    // ── 句子笔记 ───────────────────────────────────────────
+    function noteCountLabel(key) {
+      const count = (sentenceNotes.get(Number(key)) || []).length;
+      return count ? `${count} 条` : '笔记';
+    }
+
+    function renderNoteChip(key) {
+      const count = (sentenceNotes.get(Number(key)) || []).length;
+      return `<span class="tag-chip note-chip" data-note-chip="${key}"${count ? '' : ' hidden'}>📝 ${count}</span>`;
+    }
+
+    function formatNoteTime(value) {
+      const date = new Date(value || 0);
+      return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('zh-CN', {hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
+    }
+
+    function renderNoteItem(note, key) {
+      const tags = (note.tags || []).map(tag => `<span class="note-tag">#${escapeHtml(tag)}</span>`).join('');
+      if (editingNoteIds.has(Number(note.id))) {
+        return `<div class="note-item note-form">
+          <textarea data-note-edit-input="${note.id}">${escapeHtml(note.content)}</textarea>
+          <div class="note-form-row">
+            <input type="text" data-note-edit-tags="${note.id}" value="${escapeHtml((note.tags || []).join(', '))}" placeholder="标签，用逗号分隔">
+            <button class="primary-action" type="button" data-update-note="${note.id}" data-note-key="${key}">保存</button>
+            <button type="button" data-cancel-note="${note.id}" data-note-key="${key}">取消</button>
+          </div>
+        </div>`;
+      }
+      return `<div class="note-item">
+        <div class="note-content">${escapeHtml(note.content)}</div>
+        <div class="note-meta">${tags}<span>${escapeHtml(formatNoteTime(note.updated_at))}</span>
+          <span class="note-actions">
+            <button type="button" data-edit-note="${note.id}" data-note-key="${key}">编辑</button>
+            <button type="button" data-delete-note="${note.id}" data-note-key="${key}">删除</button>
+          </span>
+        </div>
+      </div>`;
+    }
+
+    function renderSentenceNotesList(key) {
+      const notes = sentenceNotes.get(Number(key)) || [];
+      if (!notes.length) return '<p class="note-empty">这句还没有笔记。</p>';
+      return `<div class="note-list">${notes.map(note => renderNoteItem(note, key)).join('')}</div>`;
+    }
+
+    function refreshSentenceNotes(key) {
+      const body = document.querySelector(`[data-notes-body="${key}"]`);
+      if (body) body.innerHTML = renderSentenceNotesList(key);
+      const count = document.querySelector(`[data-notes-count="${key}"]`);
+      if (count) count.textContent = noteCountLabel(key);
+      const chip = document.querySelector(`[data-note-chip="${key}"]`);
+      if (chip) {
+        const total = (sentenceNotes.get(Number(key)) || []).length;
+        chip.hidden = !total;
+        chip.textContent = `📝 ${total}`;
+      }
+    }
+
+    function assignSentenceNotes(notes) {
+      sentenceNotes.clear();
+      const sentences = intensiveDocument?.sentences || [];
+      const byKey = new Map(sentences.map(sentence => [Number(sentence.key), sentence]));
+      const byText = new Map(sentences.map(sentence => [normSentenceKey(sentence.text), Number(sentence.key)]));
+      for (const note of notes) {
+        const direct = byKey.get(Number(note.sentence_key));
+        const key = direct && normSentenceKey(direct.text) === normSentenceKey(note.sentence_text)
+          ? Number(direct.key)
+          : (byText.get(normSentenceKey(note.sentence_text)) ?? Number(note.sentence_key));
+        if (!sentenceNotes.has(key)) sentenceNotes.set(key, []);
+        sentenceNotes.get(key).push(note);
+      }
+    }
+
+    function setNoteStatus(key, message) {
+      const status = document.querySelector(`[data-note-status="${key}"]`);
+      if (status) status.textContent = message;
+    }
+
+    async function noteRequest(url, options = {}) {
+      const response = await fetch(url, {headers: {'Content-Type': 'application/json'}, ...options});
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || data.error || '操作失败');
+      return data;
+    }
+
+    async function saveSentenceNote(key) {
+      const sentence = sentenceByKey(key);
+      const input = document.querySelector(`[data-note-input="${key}"]`);
+      const tagsInput = document.querySelector(`[data-note-tags="${key}"]`);
+      const content = String(input?.value || '').trim();
+      if (!sentence || !content) { setNoteStatus(key, '先写点内容再保存。'); return; }
+      setNoteStatus(key, '正在保存…');
+      try {
+        const data = await noteRequest('/api/v2/notes', {
+          method: 'POST',
+          body: JSON.stringify({
+            lesson_id: LESSON_ID,
+            sentence_key: Number(sentence.key),
+            sentence_text: sentence.text,
+            content,
+            tags: String(tagsInput?.value || ''),
+          }),
+        });
+        const list = sentenceNotes.get(Number(key)) || [];
+        sentenceNotes.set(Number(key), [data.note, ...list]);
+        if (input) input.value = '';
+        if (tagsInput) tagsInput.value = '';
+        refreshSentenceNotes(key);
+        setNoteStatus(key, '已保存。');
+      } catch (error) {
+        setNoteStatus(key, `保存失败：${error.message}`);
+      }
+    }
+
+    async function updateSentenceNote(noteId, key) {
+      const content = String(document.querySelector(`[data-note-edit-input="${noteId}"]`)?.value || '').trim();
+      const tags = String(document.querySelector(`[data-note-edit-tags="${noteId}"]`)?.value || '');
+      if (!content) { setNoteStatus(key, '笔记内容不能为空。'); return; }
+      try {
+        const data = await noteRequest(`/api/v2/notes/${noteId}`, {method: 'PATCH', body: JSON.stringify({content, tags})});
+        const list = (sentenceNotes.get(Number(key)) || []).filter(note => Number(note.id) !== Number(noteId));
+        sentenceNotes.set(Number(key), [data.note, ...list]);
+        editingNoteIds.delete(Number(noteId));
+        refreshSentenceNotes(key);
+        setNoteStatus(key, '已更新。');
+      } catch (error) {
+        setNoteStatus(key, `更新失败：${error.message}`);
+      }
+    }
+
+    async function deleteSentenceNote(noteId, key) {
+      if (!confirm('确定删除这条笔记吗？删除后无法恢复。')) return;
+      try {
+        await noteRequest(`/api/v2/notes/${noteId}`, {method: 'DELETE'});
+        sentenceNotes.set(Number(key), (sentenceNotes.get(Number(key)) || []).filter(note => Number(note.id) !== Number(noteId)));
+        editingNoteIds.delete(Number(noteId));
+        refreshSentenceNotes(key);
+        setNoteStatus(key, '已删除。');
+      } catch (error) {
+        setNoteStatus(key, `删除失败：${error.message}`);
+      }
+    }
+
+    function handleNoteClick(event) {
+      const save = event.target.closest('[data-save-note]');
+      if (save) { saveSentenceNote(Number(save.dataset.saveNote)); return true; }
+      const edit = event.target.closest('[data-edit-note]');
+      if (edit) {
+        editingNoteIds.add(Number(edit.dataset.editNote));
+        refreshSentenceNotes(Number(edit.dataset.noteKey));
+        document.querySelector(`[data-note-edit-input="${edit.dataset.editNote}"]`)?.focus();
+        return true;
+      }
+      const cancel = event.target.closest('[data-cancel-note]');
+      if (cancel) {
+        editingNoteIds.delete(Number(cancel.dataset.cancelNote));
+        refreshSentenceNotes(Number(cancel.dataset.noteKey));
+        return true;
+      }
+      const update = event.target.closest('[data-update-note]');
+      if (update) { updateSentenceNote(Number(update.dataset.updateNote), Number(update.dataset.noteKey)); return true; }
+      const remove = event.target.closest('[data-delete-note]');
+      if (remove) { deleteSentenceNote(Number(remove.dataset.deleteNote), Number(remove.dataset.noteKey)); return true; }
+      return false;
+    }
+
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey)) return;
+      const input = event.target.closest?.('[data-note-input]');
+      if (input) { event.preventDefault(); saveSentenceNote(Number(input.dataset.noteInput)); return; }
+      const edit = event.target.closest?.('[data-note-edit-input]');
+      if (edit) {
+        event.preventDefault();
+        const button = document.querySelector(`[data-update-note="${edit.dataset.noteEditInput}"]`);
+        if (button) updateSentenceNote(Number(edit.dataset.noteEditInput), Number(button.dataset.noteKey));
+      }
+    });
+
     async function loadIntensiveStudy() {
       await syncIntensiveHighlightedWords();
-      const [documentResponse, tagResponse, knownResponse, vocabResponse, recommendationResponse, savedSentencesResponse] = await Promise.all([
+      const [documentResponse, tagResponse, knownResponse, vocabResponse, recommendationResponse, savedSentencesResponse, notesResponse] = await Promise.all([
         fetch(`/api/v2/lessons/${LESSON_ID}/intensive${_wordlistsQuery()}`),
         fetch('/api/v2/lessons/sentence-tags'),
         fetch('/api/known-words'),
         fetch('/vocab-log'),
         fetch(`/api/v2/lessons/${LESSON_ID}/ai-recommendations`, {cache: 'no-store'}),
         fetch('/api/v2/lessons/sentence-review'),
+        fetch(`/api/v2/notes?lesson_id=${LESSON_ID}&scope=sentence`, {cache: 'no-store'}),
       ]);
       if (!documentResponse.ok) throw new Error('无法加载整篇精读数据');
       if (savedSentencesResponse.ok) {
@@ -2458,6 +2668,10 @@
         }
       }
       intensiveDocument = await documentResponse.json();
+      if (notesResponse.ok) {
+        const notesData = await notesResponse.json().catch(() => ({}));
+        assignSentenceNotes(notesData.notes || []);
+      }
       savedLessonWords.clear();
       for (const word of intensiveDocument.lesson_words || []) savedLessonWords.add(String(word).toLowerCase());
       for (const sentence of intensiveDocument.sentences || []) {
@@ -2500,6 +2714,7 @@
     }
 
     document.addEventListener('click', event => {
+      if (handleNoteClick(event)) return;
       const closeWordCard = event.target.closest('[data-close-word-card]');
       if (closeWordCard) { closeIntensiveWordCard(); return; }
       const closeWordAnalysis = event.target.closest('[data-close-word-analysis]');

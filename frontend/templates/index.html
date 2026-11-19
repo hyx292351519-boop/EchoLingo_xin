@@ -142,7 +142,7 @@
     }
     .review-entry-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 10px;
       margin-top: 18px;
       border-top: 1px solid var(--line);
@@ -1393,6 +1393,28 @@
     .masthead-actions { display: flex; align-items: center; gap: 12px; z-index: 1; }
     .masthead-actions > span { color: var(--muted); font-size: 12px; }
     .masthead-actions strong { color: var(--brand-dark); font: 700 24px/1 Georgia, serif; }
+    .notebook-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .notebook-tools input[type="search"] { flex: 1 1 220px; min-width: 0; }
+    .notebook-tools input, .notebook-tools select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font: inherit; font-size: 13px; }
+    .notebook-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .notebook-tags button { padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+    .notebook-tags button.active { border-color: var(--brand); background: var(--brand); color: white; }
+    .notebook-list { display: grid; gap: 10px; }
+    .notebook-card { padding: 13px 15px; border: 1px solid var(--line); border-left: 4px solid var(--gold); border-radius: 0 10px 10px 0; background: var(--surface); box-shadow: 0 6px 18px rgba(31,44,36,.05); }
+    .notebook-card.lesson-note { border-left-color: var(--brand); }
+    .notebook-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 7px; font-size: 12px; color: var(--muted); }
+    .notebook-kind { padding: 1px 8px; border-radius: 999px; background: var(--surface-alt); color: var(--brand-dark); font-weight: 700; }
+    .notebook-course { color: var(--brand-dark); font-weight: 700; text-decoration: none; }
+    .notebook-course:hover { text-decoration: underline; }
+    .notebook-quote { margin: 0 0 8px; padding: 6px 10px; border-left: 3px solid var(--line); background: #fafbf8; font-size: 14px; line-height: 1.6; }
+    .notebook-content { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.7; }
+    .notebook-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+    .notebook-tag { padding: 0 7px; border-radius: 999px; background: var(--surface-alt); color: var(--brand-dark); font-weight: 700; }
+    .notebook-actions { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+    .notebook-actions a, .notebook-actions button { padding: 3px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 12px; text-decoration: none; cursor: pointer; }
+    .notebook-edit textarea { width: 100%; min-height: 90px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 14px; line-height: 1.6; resize: vertical; }
+    .notebook-edit-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .notebook-edit-row input { flex: 1 1 200px; min-width: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 13px; }
     .workshop-tabs {
       display: inline-flex; gap: 4px; margin-bottom: 18px; padding: 4px;
       border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.72);
@@ -1592,6 +1614,10 @@
       </a>
       <a class="home-action" href="#sentences" onclick="switchTab('sentences'); return false;">
         <span><strong>🗂️ 句子库</strong></span>
+        <span class="home-action-mark">进入</span>
+      </a>
+      <a class="home-action" href="#notes" onclick="switchTab('notes'); return false;">
+        <span><strong>📝 笔记本</strong></span>
         <span class="home-action-mark">进入</span>
       </a>
     </div>
@@ -2156,6 +2182,39 @@
 </div>
 
 <!-- ══════════════════════════════════════════════
+     TAB: NOTES
+══════════════════════════════════════════════ -->
+<div class="tab-pane" id="tab-notes">
+<div class="container">
+  <header class="sentence-library-masthead">
+    <div>
+      <span class="eyebrow">学习笔记</span>
+      <h2>笔记本</h2>
+      <p>汇总你在学习页和精学页记下的句子笔记与整课笔记，点击可回到原文继续学习。</p>
+    </div>
+    <div class="masthead-actions">
+      <span><strong id="notebook-total-count">0</strong> 条笔记</span>
+    </div>
+  </header>
+  <div class="notebook-tools" aria-label="笔记筛选">
+    <input id="notebook-search" type="search" placeholder="搜索笔记内容、句子或课程…" aria-label="搜索笔记" oninput="renderNotebook()">
+    <select id="notebook-scope" aria-label="按笔记类型筛选" onchange="renderNotebook()">
+      <option value="all">全部笔记</option>
+      <option value="sentence">句子笔记</option>
+      <option value="lesson">整课笔记</option>
+    </select>
+    <select id="notebook-course" aria-label="按课程筛选" onchange="renderNotebook()">
+      <option value="all">全部课程</option>
+    </select>
+  </div>
+  <div class="notebook-tags" id="notebook-tags" role="group" aria-label="按标签筛选"></div>
+  <div class="notebook-list" id="notebook-list">
+    <div class="empty-state"><p>加载中…</p></div>
+  </div>
+</div>
+</div>
+
+<!-- ══════════════════════════════════════════════
      TAB: RESOURCES
 ══════════════════════════════════════════════ -->
 <div class="tab-pane" id="tab-resources">
@@ -2366,6 +2425,8 @@ function switchTab(name) {
   } else if (name === 'sentences' && !_sentencesLoaded) {
     _sentencesLoaded = true;
     loadSentenceReview();
+  } else if (name === 'notes') {
+    loadNotebook();
   } else if (name === 'resources') {
     const status = document.getElementById('resource-status');
     if (status) status.textContent = '';
@@ -2806,6 +2867,8 @@ function updateHeaderStat(tab) {
     el.textContent = activeCount ? `${activeCount} 门课程` : '';
   } else if (tab === 'sentences') {
     el.textContent = _sentenceReviewSummary.total ? `${_sentenceReviewSummary.total} 句` : '';
+  } else if (tab === 'notes') {
+    el.textContent = _notebook.notes.length ? `${_notebook.notes.length} 条笔记` : '';
   } else {
     const total = Object.keys(vocabData).filter(k => !k.startsWith('__')).length;
     el.textContent = total ? `${total} 词` : '';
@@ -7468,6 +7531,178 @@ function startVoiceInput(key, textarea, micBtn) {
 }
 
 // ── Utilities ─────────────────────────────────
+// ── 笔记本 ────────────────────────────────────────────
+const _notebook = {notes: [], tag: '', editing: new Set(), loaded: false};
+
+async function loadNotebook() {
+  const list = document.getElementById('notebook-list');
+  if (!_notebook.loaded && list) list.innerHTML = '<div class="empty-state"><p>加载中…</p></div>';
+  try {
+    const response = await fetch('/api/v2/notes?limit=2000', {cache: 'no-store'});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || '加载失败');
+    _notebook.notes = data.notes || [];
+    _notebook.loaded = true;
+    renderNotebookCourseOptions();
+    renderNotebook();
+    updateHeaderStat('notes');
+  } catch (error) {
+    if (list) list.innerHTML = `<div class="empty-state"><p>笔记加载失败：${esc(error.message)}</p></div>`;
+  }
+}
+
+function renderNotebookCourseOptions() {
+  const select = document.getElementById('notebook-course');
+  if (!select) return;
+  const current = select.value;
+  const courses = new Map();
+  for (const note of _notebook.notes) {
+    const key = note.lesson_id ? String(note.lesson_id) : `title:${note.lesson_title || ''}`;
+    if (!courses.has(key)) courses.set(key, note.lesson_title || '未命名课程');
+  }
+  select.innerHTML = '<option value="all">全部课程</option>' + [...courses.entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], 'zh-CN'))
+    .map(([key, title]) => `<option value="${esc(key)}">${esc(title)}</option>`).join('');
+  select.value = courses.has(current) ? current : 'all';
+}
+
+function notebookCourseKey(note) {
+  return note.lesson_id ? String(note.lesson_id) : `title:${note.lesson_title || ''}`;
+}
+
+function filteredNotebookNotes() {
+  const query = String(document.getElementById('notebook-search')?.value || '').trim().toLocaleLowerCase();
+  const scope = document.getElementById('notebook-scope')?.value || 'all';
+  const course = document.getElementById('notebook-course')?.value || 'all';
+  const tag = _notebook.tag.toLocaleLowerCase();
+  return _notebook.notes.filter(note => {
+    if (scope !== 'all' && note.scope !== scope) return false;
+    if (course !== 'all' && notebookCourseKey(note) !== course) return false;
+    if (tag && !(note.tags || []).some(item => item.toLocaleLowerCase() === tag)) return false;
+    if (!query) return true;
+    return [note.content, note.sentence_text, note.lesson_title, ...(note.tags || [])]
+      .some(value => String(value || '').toLocaleLowerCase().includes(query));
+  });
+}
+
+function renderNotebookTags() {
+  const root = document.getElementById('notebook-tags');
+  if (!root) return;
+  const counts = new Map();
+  for (const note of _notebook.notes) for (const tag of note.tags || []) counts.set(tag, (counts.get(tag) || 0) + 1);
+  if (_notebook.tag && !counts.has(_notebook.tag)) _notebook.tag = '';
+  const tags = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'));
+  root.hidden = !tags.length;
+  root.innerHTML = tags.length
+    ? `<button type="button" class="${_notebook.tag ? '' : 'active'}" data-notebook-tag="">全部标签</button>` + tags.map(([tag, count]) =>
+      `<button type="button" class="${tag === _notebook.tag ? 'active' : ''}" data-notebook-tag="${esc(tag)}">#${esc(tag)} · ${count}</button>`).join('')
+    : '';
+}
+
+function formatNotebookTime(value) {
+  const date = new Date(value || 0);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('zh-CN', {hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
+}
+
+function renderNotebookCard(note) {
+  const id = Number(note.id);
+  const isSentence = note.scope === 'sentence';
+  const courseHtml = note.lesson_exists && note.lesson_id
+    ? `<a class="notebook-course" href="/workspace/${Number(note.lesson_id)}">${esc(note.lesson_title || '未命名课程')}</a>`
+    : `<span>${esc(note.lesson_title || '未命名课程')}${note.lesson_exists ? '' : '（课程已删除）'}</span>`;
+  const jump = note.lesson_exists && note.lesson_id
+    ? (isSentence
+      ? `<a href="/workspace/${Number(note.lesson_id)}/intensive?sentence_key=${encodeURIComponent(note.sentence_key)}">↩ 回到原句</a>`
+      : `<a href="/workspace/${Number(note.lesson_id)}">↩ 打开课程</a>`)
+    : '';
+  const body = _notebook.editing.has(id)
+    ? `<div class="notebook-edit">
+        <textarea id="notebook-edit-${id}">${esc(note.content)}</textarea>
+        <div class="notebook-edit-row">
+          <input id="notebook-edit-tags-${id}" type="text" value="${esc((note.tags || []).join(', '))}" placeholder="标签，逗号分隔">
+          <button type="button" class="primary" onclick="saveNotebookEdit(${id})">保存</button>
+          <button type="button" onclick="toggleNotebookEdit(${id}, false)">取消</button>
+        </div>
+      </div>`
+    : `<div class="notebook-content">${esc(note.content)}</div>`;
+  const tags = (note.tags || []).map(tag => `<span class="notebook-tag">#${esc(tag)}</span>`).join('');
+  return `<article class="notebook-card${isSentence ? '' : ' lesson-note'}">
+    <div class="notebook-card-head"><span class="notebook-kind">${isSentence ? '句子笔记' : '整课笔记'}</span>${courseHtml}</div>
+    ${isSentence ? `<blockquote class="notebook-quote">${esc(note.sentence_text)}</blockquote>` : ''}
+    ${body}
+    <div class="notebook-foot">${tags}<span>${esc(formatNotebookTime(note.updated_at))}</span>
+      <span class="notebook-actions">${jump}
+        ${_notebook.editing.has(id) ? '' : `<button type="button" onclick="toggleNotebookEdit(${id}, true)">编辑</button>`}
+        <button type="button" onclick="deleteNotebookNote(${id})">删除</button>
+      </span>
+    </div>
+  </article>`;
+}
+
+function renderNotebook() {
+  const list = document.getElementById('notebook-list');
+  const total = document.getElementById('notebook-total-count');
+  if (total) total.textContent = String(_notebook.notes.length);
+  renderNotebookTags();
+  if (!list) return;
+  if (!_notebook.notes.length) {
+    list.innerHTML = '<div class="empty-state"><p>还没有笔记。在学习页右侧的“笔记”标签，或精学页每句下方的“我的笔记”里记录吧。</p></div>';
+    return;
+  }
+  const notes = filteredNotebookNotes();
+  list.innerHTML = notes.length
+    ? notes.map(renderNotebookCard).join('')
+    : '<div class="empty-state"><p>没有符合条件的笔记。</p></div>';
+}
+
+function toggleNotebookEdit(id, editing) {
+  if (editing) _notebook.editing.add(Number(id));
+  else _notebook.editing.delete(Number(id));
+  renderNotebook();
+  if (editing) document.getElementById(`notebook-edit-${id}`)?.focus();
+}
+
+async function saveNotebookEdit(id) {
+  const content = String(document.getElementById(`notebook-edit-${id}`)?.value || '').trim();
+  const tags = String(document.getElementById(`notebook-edit-tags-${id}`)?.value || '');
+  if (!content) { alert('笔记内容不能为空。'); return; }
+  try {
+    const response = await fetch(`/api/v2/notes/${id}`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({content, tags}),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || '保存失败');
+    _notebook.notes = [data.note, ..._notebook.notes.filter(note => Number(note.id) !== Number(id))];
+    _notebook.editing.delete(Number(id));
+    renderNotebook();
+  } catch (error) {
+    alert(`保存失败：${error.message}`);
+  }
+}
+
+async function deleteNotebookNote(id) {
+  if (!confirm('确定删除这条笔记吗？删除后无法恢复。')) return;
+  try {
+    const response = await fetch(`/api/v2/notes/${id}`, {method: 'DELETE'});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || '删除失败');
+    _notebook.notes = _notebook.notes.filter(note => Number(note.id) !== Number(id));
+    _notebook.editing.delete(Number(id));
+    renderNotebookCourseOptions();
+    renderNotebook();
+    updateHeaderStat('notes');
+  } catch (error) {
+    alert(`删除失败：${error.message}`);
+  }
+}
+
+document.addEventListener('click', event => {
+  const tagButton = event.target.closest?.('[data-notebook-tag]');
+  if (!tagButton) return;
+  _notebook.tag = tagButton.dataset.notebookTag || '';
+  renderNotebook();
+});
+
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // ── 心跳：告知 server 页面还开着 ─────────────────
@@ -7626,7 +7861,7 @@ autoResumeJob();
 
 // Hash routing on load
 const _hash = location.hash.replace('#','');
-if (['vocab', 'sentences', 'resources'].includes(_hash)) switchTab(_hash);
+if (['vocab', 'sentences', 'notes', 'resources'].includes(_hash)) switchTab(_hash);
 
 // ── 自动恢复运行中的 job（刷新后重连）────────────
 async function autoResumeJob() {

@@ -306,6 +306,22 @@ def init_db(path: Path | None = None):
                     updated_at       TEXT NOT NULL DEFAULT ''
                 );
 
+                -- 学习笔记：sentence_key 为 NULL 表示整节课笔记；
+                -- lesson_title / sentence_text 为快照，课程删除后笔记仍可阅读
+                CREATE TABLE IF NOT EXISTS v2_notes (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lesson_id     INTEGER REFERENCES v2_lessons(id) ON DELETE SET NULL,
+                    lesson_title  TEXT NOT NULL DEFAULT '',
+                    sentence_key  INTEGER,
+                    sentence_text TEXT NOT NULL DEFAULT '',
+                    content       TEXT NOT NULL DEFAULT '',
+                    tags          TEXT NOT NULL DEFAULT '[]',
+                    created_at    TEXT NOT NULL DEFAULT '',
+                    updated_at    TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_v2_notes_lesson
+                    ON v2_notes(lesson_id, sentence_key);
+
                 CREATE TABLE IF NOT EXISTS v2_tags (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     category   TEXT NOT NULL,
@@ -2408,6 +2424,175 @@ def save_v2_sentence_analysis(sentence_id: int, analysis: dict) -> dict:
             (sentence_id, template, payload, _now_iso()),
         )
     return get_v2_sentence_pattern(sentence_id)
+
+
+# ── 学习笔记 ─────────────────────────────────────────────────────────
+
+NOTE_CONTENT_MAX = 20_000
+NOTE_TAG_LIMIT = 10
+NOTE_TAG_MAX_LEN = 20
+
+
+def _clean_note_tags(tags) -> list[str]:
+    if isinstance(tags, str):
+        tags = re.split(r"[,，;；\n]+", tags)
+    clean: list[str] = []
+    for tag in tags or []:
+        name = " ".join(str(tag or "").lstrip("#").split())[:NOTE_TAG_MAX_LEN]
+        if name and name.casefold() not in {t.casefold() for t in clean}:
+            clean.append(name)
+    return clean[:NOTE_TAG_LIMIT]
+
+
+def _clean_note_content(content) -> str:
+    text = str(content or "").replace("\r\n", "\n").strip()
+    if not text:
+        raise ValueError("笔记内容不能为空")
+    if len(text) > NOTE_CONTENT_MAX:
+        raise ValueError(f"笔记内容不能超过 {NOTE_CONTENT_MAX} 个字符")
+    return text
+
+
+def _note_row(row) -> dict:
+    item = dict(row)
+    try:
+        tags = json.loads(item.get("tags") or "[]")
+    except (TypeError, ValueError):
+        tags = []
+    item["tags"] = tags if isinstance(tags, list) else []
+    item["scope"] = "lesson" if item.get("sentence_key") is None else "sentence"
+    return item
+
+
+def get_v2_note(note_id: int) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM v2_notes WHERE id=?", (int(note_id),)).fetchone()
+    return _note_row(row) if row else None
+
+
+def create_v2_note(
+    lesson_id: int,
+    content: str,
+    *,
+    sentence_key: int | None = None,
+    sentence_text: str = "",
+    tags=None,
+) -> dict:
+    lesson = get_v2_lesson(int(lesson_id))
+    if not lesson:
+        raise ValueError("Lesson not found")
+    clean_content = _clean_note_content(content)
+    clean_sentence = " ".join(str(sentence_text or "").split())
+    if sentence_key is not None and not clean_sentence:
+        raise ValueError("句子笔记需要句子原文")
+    now = _now_iso()
+    with _db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO v2_notes
+                (lesson_id, lesson_title, sentence_key, sentence_text, content, tags, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(lesson_id),
+                str(lesson.get("title") or ""),
+                None if sentence_key is None else int(sentence_key),
+                clean_sentence if sentence_key is not None else "",
+                clean_content,
+                json.dumps(_clean_note_tags(tags), ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        note_id = cursor.lastrowid
+    return get_v2_note(note_id)
+
+
+def update_v2_note(note_id: int, *, content=None, tags=None) -> dict | None:
+    current = get_v2_note(note_id)
+    if not current:
+        return None
+    clean_content = current["content"] if content is None else _clean_note_content(content)
+    clean_tags = current["tags"] if tags is None else _clean_note_tags(tags)
+    with _db() as conn:
+        conn.execute(
+            "UPDATE v2_notes SET content=?, tags=?, updated_at=? WHERE id=?",
+            (clean_content, json.dumps(clean_tags, ensure_ascii=False), _now_iso(), int(note_id)),
+        )
+    return get_v2_note(note_id)
+
+
+def delete_v2_note(note_id: int) -> bool:
+    with _db() as conn:
+        cursor = conn.execute("DELETE FROM v2_notes WHERE id=?", (int(note_id),))
+    return cursor.rowcount > 0
+
+
+def list_v2_notes(
+    *,
+    lesson_id: int | None = None,
+    scope: str = "",
+    query: str = "",
+    tag: str = "",
+    limit: int = 500,
+) -> list[dict]:
+    """List notes newest-first. scope: "" (all) | "lesson" | "sentence"."""
+    clauses, params = [], []
+    if lesson_id is not None:
+        clauses.append("n.lesson_id=?")
+        params.append(int(lesson_id))
+    if scope == "lesson":
+        clauses.append("n.sentence_key IS NULL")
+    elif scope == "sentence":
+        clauses.append("n.sentence_key IS NOT NULL")
+    q = " ".join(str(query or "").split())
+    if q:
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = "%" + escaped + "%"
+        clauses.append(
+            "(n.content LIKE ? ESCAPE '\\' OR n.sentence_text LIKE ? ESCAPE '\\'"
+            " OR COALESCE(l.title, n.lesson_title) LIKE ? ESCAPE '\\')"
+        )
+        params.extend([like, like, like])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT n.id, n.lesson_id, n.sentence_key, n.sentence_text, n.content, n.tags,
+                   n.created_at, n.updated_at,
+                   COALESCE(l.title, n.lesson_title) AS lesson_title,
+                   l.id IS NOT NULL AS lesson_exists
+            FROM v2_notes n LEFT JOIN v2_lessons l ON l.id = n.lesson_id
+            {where}
+            ORDER BY n.updated_at DESC, n.id DESC
+            LIMIT ?
+            """,
+            (*params, max(1, min(int(limit), 2000))),
+        ).fetchall()
+    notes = [_note_row(row) for row in rows]
+    wanted = str(tag or "").strip().casefold()
+    if wanted:
+        notes = [n for n in notes if wanted in {t.casefold() for t in n["tags"]}]
+    for note in notes:
+        note["lesson_exists"] = bool(note.get("lesson_exists"))
+    return notes
+
+
+def list_v2_note_tags() -> list[dict]:
+    counts: dict[str, int] = {}
+    with _db() as conn:
+        rows = conn.execute("SELECT tags FROM v2_notes").fetchall()
+    for row in rows:
+        try:
+            tags = json.loads(row["tags"] or "[]")
+        except (TypeError, ValueError):
+            continue
+        for tag in tags if isinstance(tags, list) else []:
+            counts[str(tag)] = counts.get(str(tag), 0) + 1
+    return [
+        {"name": name, "count": count}
+        for name, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].casefold()))
+    ]
 
 
 def list_v2_tags() -> list[dict]:
