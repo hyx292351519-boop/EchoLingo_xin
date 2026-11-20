@@ -68,6 +68,7 @@ from webapp.fastapi_routes.vocab import router as vocab_router
 from webapp.fastapi_routes.v2_lessons import router as v2_lessons_router
 from webapp.fastapi_routes.v2_chat import router as v2_chat_router
 from webapp.fastapi_routes.v2_notes import router as v2_notes_router
+from webapp.fastapi_routes.recall_test import router as recall_test_router
 from webapp.runtime import ai_config
 from webapp.storage.lessons import migrate_lessons_to_db
 
@@ -207,6 +208,7 @@ def create_app() -> FastAPI:
     app.include_router(v2_lessons_router)
     app.include_router(v2_chat_router)
     app.include_router(v2_notes_router)
+    app.include_router(recall_test_router)
     if admin_private_router is not None:
         app.include_router(admin_private_router)
     if credits_router is not None:

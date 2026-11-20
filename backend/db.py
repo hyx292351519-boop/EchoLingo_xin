@@ -322,6 +322,16 @@ def init_db(path: Path | None = None):
                 CREATE INDEX IF NOT EXISTS idx_v2_notes_lesson
                     ON v2_notes(lesson_id, sentence_key);
 
+                -- 回忆测试记录：result 为 correct / partial / incorrect
+                CREATE TABLE IF NOT EXISTS recall_test_log (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    word       TEXT NOT NULL,
+                    result     TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_recall_test_log_word
+                    ON recall_test_log(word, id);
+
                 CREATE TABLE IF NOT EXISTS v2_tags (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     category   TEXT NOT NULL,
@@ -889,6 +899,13 @@ def cache_word_analysis(
             return None
         existing = json.loads(row["cached_analysis"]) if row["cached_analysis"] else {}
         merged = {**existing, **analysis}
+        if str(analysis.get("schema") or "").startswith("word_coach_"):
+            # 新版单词教练解析取代旧版深度解析：去掉旧版独有字段，避免新旧混杂
+            for key in ("ielts_note", "register"):
+                merged.pop(key, None)
+            if not analysis.get("edited"):
+                # AI 重新生成的解析覆盖了用户编辑版：去掉"已编辑"标记
+                merged.pop("edited", None)
         conn.execute(
             "UPDATE words SET cached_analysis=? WHERE word=?",
             (json.dumps(merged, ensure_ascii=False), normalized),
@@ -2307,6 +2324,38 @@ def get_v2_sentence_pattern(sentence_id: int) -> dict | None:
     return item
 
 
+def get_v2_sentence_analyses_by_text(texts: list[str]) -> dict[str, dict]:
+    """Batch-load stored sentence analyses by sentence text.
+
+    Returns {normalized_text: {"sentence_id": int, "analysis": dict}} for the
+    sentences that have a non-empty analysis.  Used by the intensive page so
+    analyses of sentences that were never bookmarked survive a reload.
+    """
+    normalized = sorted({_normalize_sentence_text(text) for text in texts if text and text.strip()})
+    found: dict[str, dict] = {}
+    with _db() as conn:
+        for start in range(0, len(normalized), 400):
+            chunk = normalized[start:start + 400]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""
+                SELECT s.id, s.normalized_text, p.analysis_json
+                FROM v2_sentences s JOIN v2_sentence_patterns p ON p.sentence_id = s.id
+                WHERE s.normalized_text IN ({placeholders})
+                  AND p.analysis_json NOT IN ('', '{{}}')
+                """,
+                chunk,
+            ).fetchall()
+            for row in rows:
+                try:
+                    analysis = json.loads(row["analysis_json"] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(analysis, dict) and analysis:
+                    found[row["normalized_text"]] = {"sentence_id": int(row["id"]), "analysis": analysis}
+    return found
+
+
 def save_v2_sentence_pattern(sentence_id: int, pattern_template: str) -> dict:
     clean_pattern = " ".join(str(pattern_template or "").split())
     if not clean_pattern:
@@ -2593,6 +2642,136 @@ def list_v2_note_tags() -> list[dict]:
         {"name": name, "count": count}
         for name, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].casefold()))
     ]
+
+
+# ── 回忆测试 ─────────────────────────────────────────────────────────
+
+RECALL_RESULTS = ("correct", "partial", "incorrect")
+# 连续答对次数 → 下次复习间隔（天）
+RECALL_CORRECT_INTERVALS = (3, 7, 14, 30, 60)
+
+
+def _recall_correct_streak(conn, word: str) -> int:
+    rows = conn.execute(
+        "SELECT result FROM recall_test_log WHERE word=? ORDER BY id DESC LIMIT 10",
+        (word,),
+    ).fetchall()
+    streak = 0
+    for row in rows:
+        if row["result"] != "correct":
+            break
+        streak += 1
+    return streak
+
+
+def record_recall_results(results: list[dict], today: Optional[str] = None) -> list[dict]:
+    """Apply recall-test results to familiarity and next review date.
+
+    correct   → known, next review after 3/7/14/30/60 days (by correct streak)
+    partial   → fuzzy, review tomorrow
+    incorrect → unknown, review tomorrow
+
+    Returns, per word, the previous and new state so the client can undo.
+    """
+    day = date.fromisoformat(today) if today else date.today()
+    now = _now_iso()
+    changes = []
+    with _db() as conn:
+        for item in results:
+            word = " ".join(str(item.get("word") or "").replace("’", "'").lower().split())
+            result = str(item.get("result") or "").lower()
+            if not word or result not in RECALL_RESULTS:
+                continue
+            row = conn.execute(
+                """
+                SELECT w.word, w.next_review, w.count, w.last_studied, r.familiarity
+                FROM words w JOIN word_review_items r ON r.word = w.word
+                WHERE w.word=? AND r.mastered=0
+                """,
+                (word,),
+            ).fetchone()
+            if not row:
+                continue
+            if result == "correct":
+                streak = _recall_correct_streak(conn, word)
+                interval = RECALL_CORRECT_INTERVALS[min(streak, len(RECALL_CORRECT_INTERVALS) - 1)]
+                familiarity = "known"
+            else:
+                interval = 1
+                familiarity = "fuzzy" if result == "partial" else "unknown"
+            next_review = (day + timedelta(days=interval)).isoformat()
+            conn.execute(
+                "UPDATE word_review_items SET familiarity=?, updated_at=? WHERE word=?",
+                (familiarity, now, word),
+            )
+            new_count = int(row["count"] or 0) + (0 if row["last_studied"] == day.isoformat() else 1)
+            conn.execute(
+                "UPDATE words SET next_review=?, count=?, last_studied=? WHERE word=?",
+                (next_review, new_count, day.isoformat(), word),
+            )
+            conn.execute(
+                "INSERT INTO recall_test_log (word, result, created_at) VALUES (?, ?, ?)",
+                (word, result, now),
+            )
+            changes.append({
+                "word": word,
+                "result": result,
+                "previous": {"familiarity": row["familiarity"], "next_review": row["next_review"]},
+                "current": {"familiarity": familiarity, "next_review": next_review, "interval_days": interval},
+            })
+    return changes
+
+
+def undo_recall_result(word: str, familiarity: str, next_review: str) -> bool:
+    """Restore a word's familiarity and next review date after a recall test."""
+    normalized = " ".join(str(word or "").replace("’", "'").lower().split())
+    value = str(familiarity or "").strip().lower()
+    if value not in {"unrated", "unknown", "fuzzy", "known"}:
+        raise ValueError("Invalid familiarity")
+    review_date = str(next_review or "").strip()
+    if review_date:
+        date.fromisoformat(review_date[:10])
+    with _db() as conn:
+        result = conn.execute(
+            "UPDATE word_review_items SET familiarity=?, updated_at=? WHERE word=?",
+            (value, _now_iso(), normalized),
+        )
+        if not result.rowcount:
+            return False
+        conn.execute("UPDATE words SET next_review=? WHERE word=?", (review_date, normalized))
+        latest = conn.execute(
+            "SELECT id FROM recall_test_log WHERE word=? ORDER BY id DESC LIMIT 1", (normalized,)
+        ).fetchone()
+        if latest:
+            conn.execute("DELETE FROM recall_test_log WHERE id=?", (latest["id"],))
+    return True
+
+
+def get_word_analysis_raw(word: str) -> dict | None:
+    """Any cached analysis stored for a word (deep or shallow), or None."""
+    normalized = " ".join(str(word or "").replace("’", "'").lower().split())
+    with _db() as conn:
+        row = conn.execute("SELECT cached_analysis FROM words WHERE word=?", (normalized,)).fetchone()
+    if not row or not row["cached_analysis"]:
+        return None
+    try:
+        data = json.loads(row["cached_analysis"])
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def get_last_recall_results() -> dict[str, dict]:
+    """Latest recall-test result per word: {word: {"result", "at"}}."""
+    with _db() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.word, l.result, l.created_at FROM recall_test_log l
+            JOIN (SELECT word, MAX(id) AS id FROM recall_test_log GROUP BY word) latest
+              ON latest.id = l.id
+            """
+        ).fetchall()
+    return {row["word"]: {"result": row["result"], "at": row["created_at"]} for row in rows}
 
 
 def list_v2_tags() -> list[dict]:

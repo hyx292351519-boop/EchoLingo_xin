@@ -689,6 +689,8 @@
   <script src="/static/elt_credits.js?v=20260809-1"></script>
 <script>document.addEventListener("DOMContentLoaded",function(){if(window.eltCredits){eltCredits.annotate();}});</script>
 <script src="/static/natural-tts.js?v=20260809-1"></script>
+<script src="/static/word-coach.js?v=20261120-2"></script>
+<script src="/static/analysis-editor.js?v=20261120-1"></script>
   <script>
     const LESSON_ID = {{ lesson_id }};
     const targetSentenceParam = new URLSearchParams(window.location.search).get('sentence_key');
@@ -835,7 +837,7 @@
     function renderFocusWordChips(sentence) {
       return sentenceFocusWords(sentence).map(word => {
         const recommended = aiRecommendedWords.has(word);
-        return `<button class="focus-word-chip" type="button" data-word="${escapeHtml(word)}" data-key="${sentence.key}"><strong>${escapeHtml(word)}</strong><span class="familiarity-badge">${vocabLog[word]?.count ? `已学 ${vocabLog[word].count} 次` : '新词'}</span>${recommended ? `<span class="planning-word-badge" title="${escapeHtml(aiWordReasons.get(word) || '')}">AI 推荐</span>` : ''}</button>`;
+        return `<button class="focus-word-chip" type="button" data-word="${escapeHtml(word)}" data-key="${sentence.key}"><strong>${escapeHtml(word)}</strong><span class="familiarity-badge">${vocabLog[word]?.count ? `已学 ${vocabLog[word].count} 次` : '新词'}</span>${recommended ? `<span class="planning-word-badge" title="${escapeHtml(aiWordReasons.get(word) || '')}">AI 推荐</span>` : ''}${hasDeepWordAnalysis(vocabLog[word]?.cached_analysis) ? '<span class="planning-word-badge" title="已有 AI 解析，点开可直接查看">📖 已解析</span>' : ''}</button>`;
       }).join('') || '<span class="filter-note">这句话没有可提取的重点词。</span>';
     }
 
@@ -952,10 +954,10 @@
             </section>
 
             <section class="v1-module" data-v1-module="oral-expression">
-              <div class="v1-module-head"><h3>③ 语块解析</h3><span class="v1-module-kicker">地道表达</span></div>
+              <div class="v1-module-head"><h3>③ 语块解析</h3><span class="v1-module-kicker">职场口语</span></div>
               <div class="v1-module-body">
-                <div class="module-actions"><button class="primary-action" type="button" data-generate-oral="${sentence.key}" data-force="${isChunkAnalysis(oral) ? 'true' : 'false'}">${isChunkAnalysis(oral) ? '重新解析' : 'AI 语块解析'}</button></div>
-                <div data-oral-result="${sentence.key}">${oral ? renderOralAnalysis(oral, sentence.key) : '<div class="filter-note">按自然意义拆出值得学的语块，讲清中文意思、母语者语感、常见搭配和可迁移例句。</div>'}</div>
+                <div class="module-actions"><button class="primary-action" type="button" data-generate-oral="${sentence.key}" data-force="${isChunkAnalysis(oral) ? 'true' : 'false'}">${isChunkAnalysis(oral) ? '重新解析' : 'AI 语块解析'}</button><button type="button" data-edit-oral="${sentence.key}"${isChunkAnalysis(oral) ? '' : ' hidden'}>✎ 编辑</button></div>
+                <div data-oral-result="${sentence.key}">${oral ? renderOralAnalysis(oral, sentence.key) : '<div class="filter-note">挑出能直接用在会议和工作沟通里的语块：职场表达、固定搭配、惯用框架和委婉、转折、表态等功能表达。</div>'}</div>
               </div>
             </section>
 
@@ -1612,16 +1614,21 @@
     }
 
     const CHUNK_TYPE_LABELS = {
-      collocation: '固定搭配',
+collocation: '固定搭配',
       phrasal_verb: '短语动词',
+      sentence_frame: '惯用框架',
+      workplace_expression: '职场表达',
+      softener: '委婉缓和',
+      transition: '转折衔接',
+      stance: '表态',
+      buying_time: '争取时间',
       fixed_expression: '固定表达',
-      sentence_frame: '句子框架',
       discourse_marker: '话语标记',
       hedge_softener: '缓和语气',
     };
 
     function isChunkAnalysis(data) {
-      return Boolean(data && data.schema === 'chunks_v1' && Array.isArray(data.chunks));
+      return Boolean(data && /^chunks_v\d+$/.test(String(data.schema || '')) && Array.isArray(data.chunks));
     }
 
     function renderChunkHighlightedSentence(text, chunks) {
@@ -1680,9 +1687,11 @@
       return `<div class="chunk-analysis">
         <div class="chunk-overview">
           ${sentenceText ? `<div class="chunk-overview-sentence">${renderChunkHighlightedSentence(sentenceText, data.chunks)}</div>` : ''}
-          ${data.sentence_gist || data.cefr_level ? `<div class="chunk-overview-gist">${escapeHtml(data.sentence_gist || '')}${data.cefr_level ? `<span class="chunk-cefr">${escapeHtml(data.cefr_level)}</span>` : ''}</div>` : ''}
+          ${data.sentence_gist || data.cefr_level ? `<div class="chunk-overview-gist">${escapeHtml(data.sentence_gist || '')}${data.cefr_level ? `<span class="chunk-cefr">${escapeHtml(data.cefr_level)}</span>` : ''}${data.edited ? '<span class="chunk-cefr">✎ 已编辑</span>' : ''}</div>` : ''}
         </div>
-        ${data.chunks.map((chunk, index) => renderChunkCard(chunk, index, key)).join('')}
+        ${data.chunks.length
+          ? data.chunks.map((chunk, index) => renderChunkCard(chunk, index, key)).join('')
+          : `<div class="filter-note">${escapeHtml(data.no_chunk_reason || '这句没有值得重点学习的职场口语语块。')}</div>`}
         ${templateText ? `<div class="oral-module"><span class="oral-module-label">整句骨架</span><code class="oral-template">${linkifyEnglish(templateText, key)}</code>${exampleText ? `<div style="margin-top:6px">${linkifyEnglish(exampleText, key)} ${chunkSpeakButton(exampleText, '朗读示例')}</div>` : ''}</div>` : ''}
       </div>`;
     }
@@ -1713,6 +1722,8 @@
           button.textContent = '重新解析';
           button.dataset.force = 'true';
         }
+        const editButton = document.querySelector(`[data-edit-oral="${key}"]`);
+        if (editButton) editButton.hidden = !isChunkAnalysis(data);
         return data;
       } catch (error) {
         result.innerHTML = `<div class="filter-note">语块解析失败：${escapeHtml(error.message)}</div>`;
@@ -2000,6 +2011,21 @@
       if (data.error) return `<span style="color:var(--danger)">${escapeHtml(data.error)}</span>`;
       const word = String(data.word || '').toLowerCase();
       const saved = savedLessonWords.has(word);
+      if (window.WordCoach && WordCoach.isCoach(data)) {
+        return `<div class="word-analysis">
+          <div class="word-analysis-head">
+            <h4>${escapeHtml(data.word || '')} <small>${escapeHtml(data.ipa || '')}</small></h4>
+            <div class="word-analysis-actions">
+              <button type="button" data-speak-word="${escapeHtml(word)}" data-key="${key}" aria-label="播放 ${escapeHtml(word)} 发音">🔊</button>
+              <button class="word-save-button${saved ? ' saved' : ''}" type="button" data-toggle-word-save="${escapeHtml(word)}" data-key="${key}">${saved ? '★ 已收藏' : '☆ 收藏'}</button>
+              <button type="button" data-edit-word-analysis="${escapeHtml(word)}" data-key="${key}">✎ 编辑</button>
+              <button type="button" data-reanalyze-word="${escapeHtml(word)}" data-key="${key}" title="重新生成单词解析">重新解析</button>
+              <button type="button" data-close-word-analysis="${key}">收起</button>
+            </div>
+          </div>
+          ${WordCoach.render(data)}
+        </div>`;
+      }
       const rows = [
         ['词性', data.pos], ['语域', data.register], ['基本义', data.basic_meaning],
         ['语境义', data.contextual_meaning], ['英文释义', data.en_definition], ['用法', data.usage],
@@ -2017,6 +2043,7 @@
             <button type="button" data-close-word-analysis="${key}">收起</button>
           </div>
         </div>
+        <div class="filter-note" style="margin-bottom:8px">这是旧版解析。<button type="button" data-reanalyze-word="${escapeHtml(word)}" data-key="${key}">用新版单词教练重新解析</button></div>
         <div class="word-grid">
           ${rows.map(([label, value]) => `<div class="word-block full"><span class="word-label">${label}</span>${['英文释义', '用法'].includes(label) ? linkifyEnglish(value, key) : escapeHtml(value)}</div>`).join('')}
           ${lists.map(([label, value]) => `<div class="word-block full"><span class="word-label">${label}</span><ul>${renderListValue(value, key, label === '例句')}</ul></div>`).join('')}
@@ -2046,7 +2073,7 @@
           <button class="word-save-button${saved ? ' saved' : ''}" type="button" data-toggle-word-save="${escapeHtml(word)}" data-key="${key}">${saved ? '★ 已收藏' : '☆ 收藏'}</button>
           <button class="word-review-button${inReviewBook ? ' in-review' : ''}" type="button" data-add-word-review="${escapeHtml(word)}" data-review-meaning="${escapeHtml(meaning)}" ${inReviewBook || loading ? 'disabled' : ''}>${inReviewBook ? '✓ 已在复习本' : '＋ 加入复习本'}</button>
           <button type="button" data-mark-known="${escapeHtml(word)}">✓ 我认识</button>
-          <button class="primary-action" type="button" data-study-word="${escapeHtml(word)}" data-key="${key}">深入学习</button>
+          <button class="primary-action" type="button" data-study-word="${escapeHtml(word)}" data-key="${key}">${hasDeepWordAnalysis(vocabLog[word]?.cached_analysis) ? '📖 查看解析' : '深入学习'}</button>
         </div>`;
     }
 
@@ -2204,7 +2231,7 @@
       sentence.highlighted_words = highlighted;
     }
 
-    async function analyzeIntensiveWord(word, key) {
+    async function analyzeIntensiveWord(word, key, force = false) {
       const normalized = String(word || '').toLowerCase();
       const sentence = sentenceByKey(key);
       const card = document.querySelector(`.sentence-card[data-key="${key}"]`);
@@ -2217,13 +2244,13 @@
         : vocabLog[normalized]?.cached_analysis;
       result.classList.add('open');
       closeIntensiveWordCard();
-      if (hasSessionCache || hasDeepWordAnalysis(cached)) {
+      if (!force && (hasSessionCache || hasDeepWordAnalysis(cached))) {
         wordAnalysisCache.set(cacheKey, cached);
         result.innerHTML = renderWordAnalysis(cached, key);
         result.scrollIntoView({behavior: 'smooth', block: 'nearest'});
         return;
       }
-      result.innerHTML = `<div class="word-analysis-head"><h4>${escapeHtml(normalized)}</h4><div class="word-analysis-actions"><button type="button" data-speak-word="${escapeHtml(normalized)}" data-key="${key}" aria-label="播放 ${escapeHtml(normalized)} 发音">🔊</button><button type="button" data-close-word-analysis="${key}">收起</button></div></div><span class="filter-note">AI 正在生成语境解析…</span>`;
+      result.innerHTML = `<div class="word-analysis-head"><h4>${escapeHtml(normalized)}</h4><div class="word-analysis-actions"><button type="button" data-speak-word="${escapeHtml(normalized)}" data-key="${key}" aria-label="播放 ${escapeHtml(normalized)} 发音">🔊</button><button type="button" data-close-word-analysis="${key}">收起</button></div></div><span class="filter-note">AI 单词教练正在准备讲解（内容较多，约需 20–40 秒）…</span>`;
       try {
         const response = await eltCredits.billableFetch('word_analysis', '/analyze-word', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2467,6 +2494,56 @@
         const card = document.querySelector(`.sentence-card[data-key="${key}"]`);
         card?.scrollIntoView({behavior: 'smooth', block: 'center'});
         card?.focus({preventScroll: true});
+      });
+    }
+
+    // ── 编辑 AI 解析 ───────────────────────────────────────
+    async function postAnalysisEdit(url, payload) {
+      const response = await fetch(url, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error) throw new Error(data.error || data.detail || '保存失败');
+      return data;
+    }
+
+    function editOralAnalysis(key) {
+      const sentence = sentenceByKey(key);
+      const result = document.querySelector(`[data-oral-result="${key}"]`);
+      const oral = oralAnalysisCache.get(Number(key));
+      if (!sentence || !result || !isChunkAnalysis(oral) || !window.AnalysisEditor) return;
+      AnalysisEditor.open(result, oral, {
+        kind: 'chunk',
+        onCancel: () => { result.innerHTML = renderOralAnalysis(oral, key); },
+        onSave: async edited => {
+          const data = await postAnalysisEdit('/api/oral-analysis/save', {
+            sentence_id: sentence.sentence_id || null,
+            english: sentence.text,
+            analysis: edited,
+          });
+          if (data.sentence_id) sentence.sentence_id = Number(data.sentence_id);
+          sentence.oral_analysis = data;
+          oralAnalysisCache.set(Number(key), data);
+          result.innerHTML = renderOralAnalysis(data, key);
+        },
+      });
+    }
+
+    function editWordAnalysis(word, key) {
+      const normalized = String(word || '').toLowerCase();
+      const result = document.querySelector(`[data-word-result="${key}"]`);
+      const cacheKey = `${normalized}||${key}`;
+      const current = wordAnalysisCache.get(cacheKey) || vocabLog[normalized]?.cached_analysis;
+      if (!result || !current || !window.AnalysisEditor) return;
+      AnalysisEditor.open(result, current, {
+        kind: 'word',
+        onCancel: () => { result.innerHTML = renderWordAnalysis(current, key); },
+        onSave: async edited => {
+          const data = await postAnalysisEdit('/api/word-analysis/save', {word: normalized, analysis: edited});
+          wordAnalysisCache.set(cacheKey, data);
+          vocabLog[normalized] = {...(vocabLog[normalized] || {}), cached_analysis: data};
+          result.innerHTML = renderWordAnalysis(data, key);
+        },
       });
     }
 
@@ -2739,6 +2816,15 @@
       }
       const studyWord = event.target.closest('[data-study-word]');
       if (studyWord) { analyzeIntensiveWord(studyWord.dataset.studyWord, Number(studyWord.dataset.key)); return; }
+      const reanalyzeWord = event.target.closest('[data-reanalyze-word]');
+      if (reanalyzeWord) {
+        const reKey = Number(reanalyzeWord.dataset.key);
+        const reWord = String(reanalyzeWord.dataset.reanalyzeWord || '').toLowerCase();
+        const current = wordAnalysisCache.get(`${reWord}||${reKey}`) || vocabLog[reWord]?.cached_analysis;
+        if (current?.edited && !confirm('这条单词解析你编辑过，重新解析会覆盖你的修改。确定继续吗？')) return;
+        analyzeIntensiveWord(reWord, reKey, true);
+        return;
+      }
       const addWordReview = event.target.closest('[data-add-word-review]');
       if (addWordReview) {
         addIntensiveWordToReview(
@@ -2803,7 +2889,18 @@
       const speed = event.target.closest('[data-sentence-speed]');
       if (speed) { setSentencePlaybackSpeed(Number(speed.dataset.key), Number(speed.dataset.sentenceSpeed)); return; }
       const oral = event.target.closest('[data-generate-oral]');
-      if (oral) { generateOralAnalysis(Number(oral.dataset.generateOral), oral.dataset.force === 'true'); return; }
+      if (oral) {
+        const oralKey = Number(oral.dataset.generateOral);
+        const force = oral.dataset.force === 'true';
+        if (force && oralAnalysisCache.get(oralKey)?.edited
+            && !confirm('这条语块解析你编辑过，重新解析会覆盖你的修改。确定继续吗？')) return;
+        generateOralAnalysis(oralKey, force);
+        return;
+      }
+      const editOral = event.target.closest('[data-edit-oral]');
+      if (editOral) { editOralAnalysis(Number(editOral.dataset.editOral)); return; }
+      const editWord = event.target.closest('[data-edit-word-analysis]');
+      if (editWord) { editWordAnalysis(editWord.dataset.editWordAnalysis, Number(editWord.dataset.key)); return; }
       const hint = event.target.closest('[data-generate-hint]');
       if (hint) { generatePracticeHint(Number(hint.dataset.generateHint)); return; }
       const mic = event.target.closest('[data-practice-mic]');

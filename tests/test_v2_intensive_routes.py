@@ -189,7 +189,7 @@ def test_oral_analysis_is_persisted_and_reused_by_intensive_and_sentence_library
     assert second.json()["cached"] is True
     assert len(calls) == 1
     stored = db.get_v2_sentence_pattern(saved["sentence_id"])
-    assert stored["analysis"]["schema"] == "chunks_v1"
+    assert stored["analysis"]["schema"] == "chunks_v2"
     assert stored["analysis"]["chunks"][0]["base_form"] == "take sth into account"
     assert stored["pattern_template"] == analysis["template"]
     intensive = client.get(f"/api/v2/lessons/{lesson['id']}/intensive").json()
@@ -253,14 +253,14 @@ def test_chunk_analysis_aligns_chunks_to_original_sentence(monkeypatch):
     monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, calls))
     data = TestClient(create_app()).post("/api/oral-analysis", json={"english": sentence}).json()
 
-    assert data["schema"] == "chunks_v1"
+    assert data["schema"] == "chunks_v2"
     assert data["cefr_level"] == "B2"
     assert [chunk["text"] for chunk in data["chunks"]] == ["To be honest", "I\u2019ve been meaning to"]
-    assert data["chunks"][0]["chunk_type"] == "fixed_expression"
+    assert data["chunks"][0]["chunk_type"] == "workplace_expression"
     assert data["chunks"][0]["base_form"] == "To be honest"
     assert len(data["chunks"][1]["examples"]) == 2
     assert len(data["chunks"][1]["collocations"]) == 4
-    assert "语块" in calls[0]["messages"][0]["content"]
+    assert "职场" in calls[0]["messages"][0]["content"]
     assert sentence in calls[0]["messages"][0]["content"]
 
 
@@ -316,6 +316,67 @@ def test_chunk_analysis_reports_empty_truncated_output(monkeypatch):
     assert "截断" in response.json()["error"]
 
 
+def test_chunk_analysis_allows_explicitly_empty_chunks(monkeypatch):
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    payload = {
+        "sentence_gist": "介绍模型的训练流程。",
+        "chunks": [],
+        "no_chunk_reason": "整句都是机器学习术语，没有可迁移的职场表达。",
+    }
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, []))
+    response = TestClient(create_app()).post(
+        "/api/oral-analysis",
+        json={"english": "The gradient descent optimizer updates the transformer weights."},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["chunks"] == []
+    assert "术语" in data["no_chunk_reason"]
+
+
+def test_chunk_analysis_maps_legacy_chunk_types_and_requires_chunks_field(monkeypatch):
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    sentence = "That said, I'm not sure we can ship it this week."
+    payload = {"chunks": [
+        {"text": "That said", "chunk_type": "discourse_marker"},
+        {"text": "I'm not sure", "chunk_type": "hedge_softener"},
+    ]}
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, []))
+    client = TestClient(create_app())
+    data = client.post("/api/oral-analysis", json={"english": sentence}).json()
+    assert [chunk["chunk_type"] for chunk in data["chunks"]] == ["transition", "softener"]
+    assert data["no_chunk_reason"] == ""
+
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client({"sentence_gist": "x"}, []))
+    response = client.post("/api/oral-analysis", json={"english": sentence})
+    assert response.status_code == 500
+
+
+def test_v1_chunk_cache_is_regenerated_with_current_prompt(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    text = "It turns out that we need more time."
+    sentence = db.upsert_v2_sentence(text)
+    db.save_v2_sentence_analysis(sentence["id"], {
+        "schema": "chunks_v1",
+        "chunks": [{"text": "It turns out that"}],
+    })
+    calls = []
+    payload = {"chunks": [{"text": "It turns out that", "chunk_type": "sentence_frame"}]}
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, calls))
+    data = TestClient(create_app()).post("/api/oral-analysis", json={"sentence_id": sentence["id"]}).json()
+    assert data["cached"] is False
+    assert data["schema"] == "chunks_v2"
+    assert len(calls) == 1
+
+
 def test_legacy_sentence_analysis_cache_is_regenerated_as_chunks(tmp_path, monkeypatch):
     import db
     from fastapi_server import create_app
@@ -336,7 +397,7 @@ def test_legacy_sentence_analysis_cache_is_regenerated_as_chunks(tmp_path, monke
     first = client.post("/api/oral-analysis", json={"sentence_id": sentence["id"]}).json()
     second = client.post("/api/oral-analysis", json={"sentence_id": sentence["id"]}).json()
 
-    assert first["cached"] is False and first["schema"] == "chunks_v1"
+    assert first["cached"] is False and first["schema"] == "chunks_v2"
     assert second["cached"] is True
     assert len(calls) == 1
     # 新结果没有 template 时，保留原有句式骨架供练习使用
@@ -614,7 +675,7 @@ def test_intensive_document_contains_all_sentences_and_saved_tags(tmp_path, monk
     assert "openIntensiveWordCard" in page.text
     assert "hasDeepWordAnalysis" in page.text
     assert "const hasSessionCache = wordAnalysisCache.has(cacheKey)" in page.text
-    assert "if (hasSessionCache || hasDeepWordAnalysis(cached))" in page.text
+    assert "if (!force && (hasSessionCache || hasDeepWordAnalysis(cached)))" in page.text
     assert "toggleIntensiveWordSaved" in page.text
     assert "data-toggle-word-save" in page.text
     assert "addIntensiveWordToReview" in page.text
@@ -891,3 +952,50 @@ def test_intensive_export_writes_homepage_html_and_lesson_metadata(tmp_path, mon
 
     homepage_lessons = client.get("/api/lessons").json()
     assert all(item["filename"] != exported.name for item in homepage_lessons)
+
+
+def test_chunk_analysis_of_unsaved_sentence_survives_reload_and_can_be_edited(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    text = "It turns out that we need more time."
+    payload = {"chunks": [{"text": "It turns out that", "chunk_type": "sentence_frame"}], "template": "It turns out that [sth]."}
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, []))
+    client = TestClient(create_app())
+    lesson = db.create_v2_lesson(
+        source_type="reading_text", source_url="manual:reload", title="Reload", lesson_mode="reading",
+    )
+    db.replace_v2_reading_blocks(lesson["id"], [{"index": 0, "text": text}])
+
+    # Analysed without bookmarking the sentence (no sentence_id yet)
+    generated = client.post("/api/oral-analysis", json={"english": text, "persist": True}).json()
+    reloaded = client.get(f"/api/v2/lessons/{lesson['id']}/intensive").json()["sentences"][0]
+    assert reloaded["saved"] is False
+    assert reloaded["oral_analysis"]["chunks"][0]["text"] == "It turns out that"
+    assert reloaded["sentence_id"] == generated["sentence_id"]
+
+    edited = dict(reloaded["oral_analysis"])
+    edited["chunks"] = [
+        {**edited["chunks"][0], "nuance": "我自己的理解"},
+        {"text": "need more time", "chunk_type": "bogus", "examples": [{"en": "We need more time.", "cn": ""}]},
+        {"text": "", "nuance": "空条目会被丢掉"},
+    ]
+    edited["template"] = "It turns out that [new fact]."
+    saved = client.post("/api/oral-analysis/save", json={"sentence_id": reloaded["sentence_id"], "analysis": edited})
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["edited"] is True
+    assert [c["text"] for c in body["chunks"]] == ["It turns out that", "need more time"]
+    assert body["chunks"][0]["nuance"] == "我自己的理解"
+    assert body["chunks"][1]["chunk_type"] == "workplace_expression"
+    assert db.get_v2_sentence_pattern(reloaded["sentence_id"])["pattern_template"] == "It turns out that [new fact]."
+
+    again = client.get(f"/api/v2/lessons/{lesson['id']}/intensive").json()["sentences"][0]
+    assert again["oral_analysis"]["edited"] is True
+
+    regenerated = client.post("/api/oral-analysis", json={"sentence_id": reloaded["sentence_id"], "force": True}).json()
+    assert "edited" not in regenerated
+
+    assert client.post("/api/oral-analysis/save", json={"analysis": edited}).status_code == 400

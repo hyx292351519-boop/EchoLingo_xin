@@ -3546,8 +3546,10 @@
     }
 
     const CHUNK_TYPE_LABELS = {
-      collocation: '固定搭配', phrasal_verb: '短语动词', fixed_expression: '固定表达',
-      sentence_frame: '句子框架', discourse_marker: '话语标记', hedge_softener: '缓和语气',
+      collocation: '固定搭配', phrasal_verb: '短语动词', sentence_frame: '惯用框架',
+      workplace_expression: '职场表达', softener: '委婉缓和', transition: '转折衔接',
+      stance: '表态', buying_time: '争取时间',
+      fixed_expression: '固定表达', discourse_marker: '话语标记', hedge_softener: '缓和语气',
     };
 
     function renderOralModules(data) {
@@ -3578,7 +3580,7 @@
             ${lvl ? `<span class="oral-cefr-badge">${lvl}</span>` : ''}
           </div>
         </div>
-        ${chunkModules}
+        ${chunkModules || `<div class="oral-module"><div class="oral-module-body">${escapeHtml(data.no_chunk_reason || '这句没有值得重点学习的职场口语语块。')}</div></div>`}
         <div class="oral-module">
           <div class="oral-module-label">整句骨架</div>
           <div class="oral-module-body">

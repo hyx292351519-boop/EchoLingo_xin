@@ -19,11 +19,14 @@ from prompts import (
     LISTENING_RETELL_PROMPT,
     CORRECTION_PROMPT,
     PRACTICE_EXAMPLE_PROMPT,
-    WORD_ANALYSIS_PROMPT,
+    WORD_COACH_PROMPT,
+    WORD_EXERCISE_CHECK_PROMPT,
 )
 from starlette.concurrency import run_in_threadpool
 from webapp.runtime import ai_config
 from webapp.services import dicts as dict_service
+from webapp.services.word_coach import is_word_coach, normalize_word_coach
+from webapp.services.ai_json import json_completion_kwargs, parse_ai_json
 
 router = APIRouter()
 
@@ -41,6 +44,11 @@ async def _parse_body(request: Request) -> dict:
         return {}
 
 
+# 共享实现见 webapp.services.ai_json；保留原名供本模块调用
+_json_completion_kwargs = json_completion_kwargs
+_parse_ai_json = parse_ai_json
+
+
 @router.post("/analyze-word")
 async def analyze_word(request: Request):
     data = await _parse_body(request)
@@ -51,20 +59,17 @@ async def analyze_word(request: Request):
 
     ecdict = await run_in_threadpool(dict_service.lookup_ecdict, word)
     dict_meta = dict_service.format_ecdict_meta(dict_service.lookup_ecdict_meta(word))
-    prompt = WORD_ANALYSIS_PROMPT.format(
+    prompt = WORD_COACH_PROMPT.format(
         word=word,
-        sentence=sentence,
+        sentence=sentence or "（无）",
         ecdict=ecdict or "（未找到）",
     )
     try:
         resp = await run_in_threadpool(
             ai_config.client.chat.completions.create,
-            model=ai_config.AI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.3,
+            **_json_completion_kwargs(prompt, temperature=0.3, max_tokens=7000),
         )
-        analysis = json.loads(resp.choices[0].message.content)
+        analysis = normalize_word_coach(_parse_ai_json(resp.choices[0]), word)
         cached = db.cache_word_analysis(
             word,
             analysis,
@@ -75,6 +80,75 @@ async def analyze_word(request: Request):
         if isinstance(result, dict):
             result = {**result, "dict_meta": dict_meta}
         return result
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.post("/api/word-analysis/save")
+async def save_word_analysis(request: Request):
+    """Save a user-edited word-coach analysis."""
+    data = await _parse_body(request)
+    word = str(data.get("word") or "").strip()
+    analysis = data.get("analysis")
+    if not word or not isinstance(analysis, dict):
+        return JSONResponse({"error": "word and analysis required"}, status_code=400)
+    if not is_word_coach(analysis):
+        return JSONResponse({"error": "只能编辑新版单词教练解析"}, status_code=400)
+    try:
+        cleaned = normalize_word_coach(analysis, word)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    cleaned["edited"] = True
+    saved = db.cache_word_analysis(
+        word,
+        cleaned,
+        target_type=data.get("target_type", "word"),
+        lemma=data.get("lemma", ""),
+    )
+    if saved is None:
+        return JSONResponse({"error": "这个词还不在词汇本里，无法保存"}, status_code=404)
+    return saved
+
+
+_EXERCISE_VERDICTS = ("correct", "partial", "incorrect")
+
+
+@router.post("/api/word-exercise-check")
+async def word_exercise_check(request: Request):
+    data = await _parse_body(request)
+    word = str(data.get("word") or "").strip()
+    question = str(data.get("question") or "").strip()
+    user_answer = str(data.get("user_answer") or "").strip()
+    if not word or not question:
+        return JSONResponse({"error": "word and question required"}, status_code=400)
+    if not user_answer:
+        return JSONResponse({"error": "请先写下你的答案"}, status_code=400)
+    options = data.get("options") if isinstance(data.get("options"), list) else []
+    prompt = WORD_EXERCISE_CHECK_PROMPT.format(
+        word=word,
+        exercise_type=str(data.get("type") or "translate")[:20],
+        question=question[:1000],
+        options=" / ".join(str(option)[:200] for option in options[:4]) or "（无）",
+        answer=str(data.get("answer") or "")[:1000] or "（无）",
+        explanation=str(data.get("explanation") or "")[:1000] or "（无）",
+        user_answer=user_answer[:1000],
+    )
+    try:
+        resp = await run_in_threadpool(
+            ai_config.client.chat.completions.create,
+            **_json_completion_kwargs(prompt, temperature=0.2, max_tokens=1200),
+        )
+        raw = _parse_ai_json(resp.choices[0])
+        verdict = str(raw.get("verdict") or "").strip().lower()
+        feedback = " ".join(str(raw.get("feedback") or "").split())
+        if not feedback:
+            raise ValueError("AI 未返回批改说明，请重试")
+        return {
+            "verdict": verdict if verdict in _EXERCISE_VERDICTS else "partial",
+            "feedback": feedback,
+            "corrected": " ".join(str(raw.get("corrected") or "").split()),
+            "better_expression": " ".join(str(raw.get("better_expression") or "").split()),
+        }
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -635,38 +709,33 @@ def _locate_chunk(sentence: str, chunk_text: str) -> str:
     return match.group(0) if match else ""
 
 
-def _parse_chunk_analysis_json(choice) -> dict:
-    """Parse the model's JSON reply, tolerating code fences and surrounding text."""
-    finish_reason = str(getattr(choice, "finish_reason", "") or "").lower()
-    text = str(getattr(choice.message, "content", "") or "").strip()
-    if not text:
-        if finish_reason == "length":
-            raise ValueError("AI 输出被截断（返回为空），请重试")
-        raise ValueError("AI 未返回内容，请重试")
-    start, end = text.find("{"), text.rfind("}")
-    try:
-        if start < 0 or end <= start:
-            raise ValueError
-        parsed = json.loads(text[start:end + 1])
-    except ValueError:
-        if finish_reason == "length":
-            raise ValueError("AI 输出被截断，请重试") from None
-        raise ValueError("AI 返回的不是有效 JSON，请重试") from None
-    if not isinstance(parsed, dict):
-        raise ValueError("AI 返回格式异常，请重试")
-    return parsed
+# 模型偶尔沿用旧版类型名：映射到新分类，避免一律落入默认类型
+_LEGACY_CHUNK_TYPES = {
+    "fixed_expression": "workplace_expression",
+    "discourse_marker": "transition",
+    "hedge_softener": "softener",
+}
 
 
 def _normalize_chunk_analysis(raw: dict, sentence: str) -> dict:
-    """Validate the AI chunk analysis and keep only well-formed, verbatim chunks."""
+    """Validate the AI chunk analysis and keep only well-formed, verbatim chunks.
+
+    An explicitly empty ``chunks`` list is valid: the prompt asks the model to
+    skip sentences made only of jargon or one-off phrasing.  Returning chunks
+    that all fail to match the sentence is still treated as a bad response.
+    """
+    raw_chunks = raw.get("chunks")
+    if not isinstance(raw_chunks, list):
+        raise ValueError("AI 返回的语块格式异常，请重试")
     chunks = []
-    for item in raw.get("chunks") or []:
+    for item in raw_chunks:
         if not isinstance(item, dict):
             continue
         text = _locate_chunk(sentence, _clean_text(item.get("text")))
         if not text or any(chunk["text"] == text for chunk in chunks):
             continue
         chunk_type = _clean_text(item.get("chunk_type")).lower()
+        chunk_type = _LEGACY_CHUNK_TYPES.get(chunk_type, chunk_type)
         examples = []
         for example in item.get("examples") or []:
             if isinstance(example, dict):
@@ -678,7 +747,7 @@ def _normalize_chunk_analysis(raw: dict, sentence: str) -> dict:
         chunks.append({
             "text": text,
             "base_form": _clean_text(item.get("base_form")) or text,
-            "chunk_type": chunk_type if chunk_type in CHUNK_TYPES else "fixed_expression",
+            "chunk_type": chunk_type if chunk_type in CHUNK_TYPES else "workplace_expression",
             "meaning_cn": _clean_text(item.get("meaning_cn")),
             "nuance": _clean_text(item.get("nuance")),
             "collocations": [
@@ -689,10 +758,13 @@ def _normalize_chunk_analysis(raw: dict, sentence: str) -> dict:
         })
         if len(chunks) >= _CHUNK_LIMIT:
             break
-    if not chunks:
-        raise ValueError("AI 未返回与原句匹配的语块")
+    if not chunks and raw_chunks:
+        raise ValueError("AI 未返回与原句匹配的语块，请重试")
     chunks.sort(key=lambda chunk: sentence.find(chunk["text"]))
     cefr = _clean_text(raw.get("cefr_level")).upper()
+    no_chunk_reason = _clean_text(raw.get("no_chunk_reason")) if not chunks else ""
+    if not chunks and not no_chunk_reason:
+        no_chunk_reason = "这句主要是专业内容或一次性表达，没有值得重点学习的职场口语语块。"
     return {
         "schema": CHUNK_ANALYSIS_SCHEMA,
         "sentence_gist": _clean_text(raw.get("sentence_gist")),
@@ -700,6 +772,7 @@ def _normalize_chunk_analysis(raw: dict, sentence: str) -> dict:
         "chunks": chunks,
         "template": _clean_text(raw.get("template")),
         "template_example": _clean_text(raw.get("template_example")),
+        "no_chunk_reason": no_chunk_reason,
     }
 
 
@@ -731,28 +804,83 @@ async def oral_analysis(request: Request):
         # 旧版句式分析（无 schema）视为未缓存，点击时重新生成语块分析
         if cached_analysis.get("schema") == CHUNK_ANALYSIS_SCHEMA:
             return {**cached_analysis, "cached": True, "sentence_id": sentence_id}
-    completion_kwargs = {
-        "model": ai_config.AI_MODEL,
-        "messages": [{"role": "user", "content": CHUNK_ANALYSIS_PROMPT.format(english=english)}],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.3,
-        "max_tokens": 3000,
-    }
-    # DeepSeek V4 默认开启思考，推理 token 会挤占 max_tokens，导致正文为空
-    if (
-        "api.deepseek.com" in str(ai_config.AI_BASE_URL or "").lower()
-        and str(ai_config.AI_MODEL).lower().startswith("deepseek-v4")
-    ):
-        completion_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    completion_kwargs = _json_completion_kwargs(
+        CHUNK_ANALYSIS_PROMPT.format(english=english), temperature=0.3, max_tokens=3000,
+    )
     try:
         resp = await run_in_threadpool(ai_config.client.chat.completions.create, **completion_kwargs)
-        raw = _parse_chunk_analysis_json(resp.choices[0])
+        raw = _parse_ai_json(resp.choices[0])
         analysis = _normalize_chunk_analysis(raw, english)
         if persist and sentence_id is not None:
             db.save_v2_sentence_analysis(sentence_id, analysis)
         return {**analysis, "cached": False, "sentence_id": sentence_id}
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+def _clean_edited_chunk_analysis(raw: dict) -> dict:
+    """Light validation for a user-edited chunk analysis.
+
+    Unlike AI output, edited chunks are not required to match the sentence
+    verbatim: the learner may deliberately rephrase a chunk.
+    """
+    chunks = []
+    for item in raw.get("chunks") or []:
+        if not isinstance(item, dict) or not _clean_text(item.get("text")):
+            continue
+        chunk_type = _clean_text(item.get("chunk_type")).lower()
+        examples = []
+        for example in item.get("examples") or []:
+            if isinstance(example, dict) and _clean_text(example.get("en")):
+                examples.append({"en": _clean_text(example.get("en")), "cn": _clean_text(example.get("cn"))})
+        chunks.append({
+            "text": _clean_text(item.get("text")),
+            "base_form": _clean_text(item.get("base_form")),
+            "chunk_type": chunk_type if chunk_type in CHUNK_TYPES else "workplace_expression",
+            "meaning_cn": _clean_text(item.get("meaning_cn")),
+            "nuance": _clean_text(item.get("nuance")),
+            "collocations": [
+                c for c in (_clean_text(x) for x in (item.get("collocations") or []) if isinstance(x, str)) if c
+            ][:_CHUNK_COLLOCATION_LIMIT * 2],
+            "scenarios": _clean_text(item.get("scenarios")),
+            "examples": examples[:_CHUNK_EXAMPLE_LIMIT * 2],
+        })
+    cefr = _clean_text(raw.get("cefr_level")).upper()
+    return {
+        "schema": CHUNK_ANALYSIS_SCHEMA,
+        "sentence_gist": _clean_text(raw.get("sentence_gist")),
+        "cefr_level": cefr if cefr in _CEFR_LEVELS else "B1",
+        "chunks": chunks[:_CHUNK_LIMIT * 2],
+        "template": _clean_text(raw.get("template")),
+        "template_example": _clean_text(raw.get("template_example")),
+        "no_chunk_reason": _clean_text(raw.get("no_chunk_reason")) if not chunks else "",
+        "edited": True,
+    }
+
+
+@router.post("/api/oral-analysis/save")
+async def save_oral_analysis(request: Request):
+    """Save a user-edited chunk analysis for a sentence."""
+    data = await _parse_body(request)
+    analysis = data.get("analysis")
+    if not isinstance(analysis, dict):
+        return JSONResponse({"error": "analysis required"}, status_code=400)
+    sentence_id = data.get("sentence_id")
+    try:
+        if sentence_id is not None:
+            sentence_id = int(sentence_id)
+            if not db.get_v2_sentence_by_id(sentence_id):
+                return JSONResponse({"error": "Sentence not found"}, status_code=404)
+        else:
+            english = str(data.get("english") or "").strip()
+            if not english:
+                return JSONResponse({"error": "sentence_id or english required"}, status_code=400)
+            sentence_id = int(db.upsert_v2_sentence(english)["id"])
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid sentence_id"}, status_code=400)
+    cleaned = _clean_edited_chunk_analysis(analysis)
+    db.save_v2_sentence_analysis(sentence_id, cleaned)
+    return {**cleaned, "cached": True, "sentence_id": sentence_id}
 
 
 @router.post("/api/listening-retell-analysis")

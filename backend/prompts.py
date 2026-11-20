@@ -3,37 +3,153 @@
 修改提示词只需编辑本文件，无需触碰 analyzer.py 或 webapp/routes/main.py。
 """
 
-# ── 词汇深度分析（analyze-word 路由）────────────────────────────────
-WORD_ANALYSIS_PROMPT = """你是专业英语词汇教师，服务于雅思备考学生（目标7.0分）。
-请基于以下词典资料，对目标词汇进行深度分析。
+# ── 单词深度学习教练（analyze-word 路由，结构版本 word_coach_v1）──────────
+WORD_COACH_SCHEMA = "word_coach_v1"
 
-目标词汇：{word}
-所在句子：{sentence}
+WORD_COACH_PROMPT = """\
+你是一名专业的英语词汇教学教练，熟悉英语语音学、自然拼读（Phonics）、词源学、认知语言学和英语实际使用规律。
+你的任务：帮助学习者从英语母语者的认知和使用角度理解这个词，而不是提供英汉词典式释义。学习者以中文为母语，目标是能听懂、理解、自然地说出和正确地写出这个词，尤其是在日常和工作场景中使用。
 
-词典参考资料：
-【ECDICT（内置开源英汉词典）】{ecdict}
+目标词或短语：{word}
+学习者遇到它的句子（可能为空）：{sentence}
+词典参考（ECDICT，仅供核对，可能为空）：{ecdict}
 
-请严格按以下 JSON 格式输出，不要输出任何额外文字：
+## 教学原则
+1. 先识别，再理解，最后使用。
+2. 概念优先于翻译：中文只作辅助，不要用一个中文词代替完整的英文概念。
+3. 使用优先于死记硬背：重点讲真实英语中怎么用。
+4. 准确：不要为了拆解而编造词根词缀，不要把自然拼读规律说成绝对规则；不确定的词源、发音或用法要明确说"不确定"，不要编造。
+5. 区分知识类型：词源学上的词根词缀、现代英语的构词结构、自然拼读的字母与发音对应，三者不要混为一谈。
+6. 循序渐进：用简单自然的英语和中文解释，不堆砌术语；优先高频实用内容，不罗列冷门知识。
+7. 如果目标是短语或词组，按整个表达来分析，morphology 可以说明由哪些词组成。
+
+## 输出内容
+### basic_meaning / contextual_meaning
+- basic_meaning：1–3 个最常用的简洁中文义项，用"；"分隔，用于词汇本列表显示。
+- contextual_meaning：它在上面那个句子里的具体意思和作用；句子为空时填空字符串。
+
+### recognition：单词识别
+- morphology：
+  - splittable：能否合理拆分为前缀、词根、后缀。
+  - parts：每个部分及含义，type 只能是 prefix、root、suffix、word（短语中的组成词）。不能拆分时为空数组。
+  - explanation：各部分如何组合成现在的意思；不适合拆分时直接说明原因。
+  - etymology：简要的词源演变；不确定或无必要时填空字符串。
+- pronunciation：
+  - ipa_us、ipa_uk：美式和英式 IPA；两者无明显差异时填相同内容。
+  - syllables：用"·"划分音节，如 "con·cept"。
+  - stress：重音在哪个音节，以及为什么容易读错（如有）。
+  - spelling_to_sound：按顺序列出关键字母组合与发音的对应，每项写 letters、sound（IPA）、note（这个对应是否常见）。
+  - irregular：不符合常见自然拼读规律的地方；没有则填空字符串。
+  - pitfalls：中文母语者容易读错的地方，以及怎么纠正。
+
+### concept：核心概念理解（最重要）
+- core_en：用简单准确的英文解释最核心的含义（不超过 30 词）。
+- core_cn：用中文解释这个概念，不要只给一个对应词。
+- mental_picture：用一个具体场景、动作或画面帮助直观理解。
+- senses：常见含义，每项写 pos（词性）、sense_en、sense_cn、link（它和核心概念的联系）。有多个词性或常见含义时分别列出，最多 4 项。
+- usage：daily（日常对话中怎么用）、work_academic（工作、学术或专业场合怎么用）、most_natural（什么情况下用它最自然）、prefer_others（哪些情况虽然语法正确，但母语者更倾向于用别的说法，并给出那个说法）。
+
+### collocation_groups：固定搭配与词汇语块
+按类别分组，category 只能是 verb（高频动词搭配）、noun（高频名词搭配）、adj_adv（形容词或副词搭配）、preposition（介词搭配）、phrase（固定表达或短语）。
+每组 items 中每项写 phrase、en（简单英文解释）、cn（中文辅助解释）、example（一个自然例句）。
+只选真实、高频、值得主动掌握的搭配，不为凑数列冷门组合；没有的类别直接省略。全部加起来 4–10 条。
+
+### sentence_building：句子构建
+- forms：词性及常见变化（如复数、时态、派生词），一段话说明。
+- patterns：常见语法结构和句型，每项写 pattern、note（主谓宾组合、介词、从句等限制）、example。最多 4 项。
+- common_errors：中文母语者容易犯的语法或搭配错误，每项写 wrong、right、why。最多 3 项。
+- examples：至少 3 个不同场景的自然例句，scene 只能是 daily（日常生活）、work（学习或工作）、academic（学术或专业，不适用时可以省略），每项写 en 和 cn。例句必须自然，不要为了展示单词写出不符合真实习惯的句子；不要照抄学习者遇到的那个句子，要换成新的语境。
+
+### similar_words：近义词辨析
+挑 2–3 个容易混淆的近义词，每项写 word、core（核心概念区别）、usage（使用场景区别）、collocation（搭配区别）、not_interchangeable（什么情况下不能互换，给出例子）。
+没有真正容易混淆的近义词时返回空数组，不要强行凑。
+
+### exercises：主动掌握练习
+设计 2–3 道简短练习，帮助学习者主动调用刚学的知识。type 只能是：
+- choose：根据场景选择合适的表达（给出 options）
+- translate：根据中文描述构造英文句子
+- compare：在两个相似搭配中选择更自然的一个（给出 options）
+每项写 type、question（中文题干，必要时含英文）、options（choose 和 compare 时给 2–4 个选项，translate 时为空数组）、answer（参考答案）、explanation（为什么这样说更自然）。
+
+## 输出
+只输出合法 JSON，不要 markdown，也不要任何额外文字：
 {{
+  "schema": "word_coach_v1",
   "word": "{word}",
-  "pos": "词性（名词/动词/形容词等）",
-  "ipa": "IPA音标（美式）",
-  "basic_meaning": "基本义（简洁中文）,希望可以结合词汇的起源历史或文化背景",
-  "contextual_meaning": "语境义：结合上面那句话，这个词在此处的具体含义",
-  "en_definition": "英文释义（参考词典，30词以内，简明）",
-  "usage": "核心用法说明（包括语法搭配，如 +that从句、+to do 等）",
-  "collocations": ["常见搭配1（附中文）", "常见搭配2", "常见搭配3"],
-  "register": "语域（formal正式 / neutral中性 / informal非正式 / spoken口语 / academic学术）",
-  "synonyms": [
-    {{"word": "近义词1", "difference": "与目标词的细微区别（一句话）"}},
-    {{"word": "近义词2", "difference": "区别"}}
-  ],
-  "ielts_note": "雅思考试中该词的考点提示（听力/阅读/写作常见用法）",
-  "examples": [
-    "职场英语例句1（贴近本视频话题）",
-    "日常英语例句2"
+  "basic_meaning": "",
+  "contextual_meaning": "",
+  "recognition": {{
+    "morphology": {{"splittable": true, "parts": [{{"part": "", "type": "root", "meaning": ""}}], "explanation": "", "etymology": ""}},
+    "pronunciation": {{"ipa_us": "", "ipa_uk": "", "syllables": "", "stress": "", "spelling_to_sound": [{{"letters": "", "sound": "", "note": ""}}], "irregular": "", "pitfalls": ""}}
+  }},
+  "concept": {{
+    "core_en": "", "core_cn": "", "mental_picture": "",
+    "senses": [{{"pos": "", "sense_en": "", "sense_cn": "", "link": ""}}],
+    "usage": {{"daily": "", "work_academic": "", "most_natural": "", "prefer_others": ""}}
+  }},
+  "collocation_groups": [{{"category": "verb", "items": [{{"phrase": "", "en": "", "cn": "", "example": ""}}]}}],
+  "sentence_building": {{
+    "forms": "",
+    "patterns": [{{"pattern": "", "note": "", "example": ""}}],
+    "common_errors": [{{"wrong": "", "right": "", "why": ""}}],
+    "examples": [{{"scene": "daily", "en": "", "cn": ""}}]
+  }},
+  "similar_words": [{{"word": "", "core": "", "usage": "", "collocation": "", "not_interchangeable": ""}}],
+  "exercises": [{{"type": "choose", "question": "", "options": [""], "answer": "", "explanation": ""}}]
+}}
+"""
+
+# ── 单词练习批改（/api/word-exercise-check 路由）────────────────────────
+WORD_EXERCISE_CHECK_PROMPT = """\
+你是一名英语词汇教练，正在批改学习者针对目标词的一道练习。学习者以中文为母语。
+
+目标词或短语：{word}
+练习类型：{exercise_type}
+题目：{question}
+选项（可能为空）：{options}
+参考答案：{answer}
+参考讲解：{explanation}
+学习者的回答：{user_answer}
+
+批改要求：
+1. 先判断学习者的回答是否正确。翻译题不要求和参考答案一字不差，只要意思准确、表达自然、正确使用了目标词即可算对。
+2. 如果有错误，先指出具体错在哪里（语法、搭配、词义、语气），再给出改正后的说法。
+3. 解释为什么母语者更倾向于某种表达，语言简洁，用中文。
+4. 回答已经正确时，可以补充一个更地道或更常用的说法；没有就留空。
+
+只输出合法 JSON，不要任何额外文字：
+{{
+  "verdict": "correct | partial | incorrect",
+  "feedback": "中文批改说明",
+  "corrected": "改正后的英文（回答正确时可以填学习者原句或空字符串）",
+  "better_expression": "更地道的说法（可为空）"
+}}
+"""
+
+# ── 学过单词的回忆测试：AI 造句题（/api/recall-test/ai-questions）──────────
+RECALL_QUESTIONS_PROMPT = """\
+你是一名英语词汇教练，正在给学习者出一套"主动回忆"测试题。学习者以中文为母语，之前已经学过下面这些词，现在要检验能否在真实场景中主动想起并正确使用它们。
+
+学过的词及其学习要点（JSON）：
+{words_json}
+
+出题要求：
+1. 每个词出 1 道题，按输入顺序排列。
+2. 题目要求学习者主动产出英文，不能只是认读。type 只能是：
+   - scene：给出一个具体的中文场景（优先工作、会议或日常对话），让学习者用目标词说一句英文
+   - translate：给一句中文，让学习者翻译成英文，自然的译法必须用到目标词
+   - collocation：考查学习要点里的一个高频搭配或易错点，让学习者用这个搭配造句
+3. 题干用中文写，**不要在题干中出现目标词本身或它的直接英文形式**，否则就成了认读题。可以用"用你学过的一个表示……的词"之类的提示。
+4. 优先考查学习要点里的核心概念、高频搭配和常见错误。
+5. answer 给出一个自然的参考答案（完整英文句子），explanation 用一句中文说明考点。
+
+只输出合法 JSON，不要任何额外文字：
+{{
+  "questions": [
+    {{"word": "目标词", "type": "scene", "question": "中文题干", "answer": "参考英文答案", "explanation": "考点说明"}}
   ]
-}}"""
+}}
+"""
 
 WORD_GLOSS_FALLBACK_PROMPT = """你是英汉词典编辑。请为英语词或短语“{word}”给出准确、简洁的中文释义。
 要求：
@@ -256,57 +372,71 @@ PRACTICE_EXAMPLE_PROMPT = """
 
 # ── 语块分析按需生成（/api/oral-analysis 路由）──────────────────
 # 输出结构版本号；路由据此判断缓存是否为旧版句式分析，前端据此选择渲染方式。
-CHUNK_ANALYSIS_SCHEMA = "chunks_v1"
+CHUNK_ANALYSIS_SCHEMA = "chunks_v2"
+# 语块类型，对应学习者关心的四类：职场高频表达、固定搭配、惯用框架、语用功能块
 CHUNK_TYPES = (
-    "collocation",
-    "phrasal_verb",
-    "fixed_expression",
-    "sentence_frame",
-    "discourse_marker",
-    "hedge_softener",
+    "workplace_expression",  # 高频口语 / 职场表达
+    "collocation",           # 固定搭配
+    "sentence_frame",        # 惯用框架
+    "phrasal_verb",          # 短语动词
+    "softener",              # 语用：委婉、缓和
+    "transition",            # 语用：转折、衔接
+    "stance",                # 语用：表态、给出立场
+    "buying_time",           # 语用：争取时间、组织思路
 )
 
 CHUNK_ANALYSIS_PROMPT = """\
-你是一名英语语块（lexical chunks）教练，服务对象是以中文为母语、想说出地道英语的学习者。
-你的目标不是分析语法，而是帮助学习者看懂：母语者是用哪些现成的"表达块"把这句话拼起来的，以及每个块背后的语感。
+你是一名职场英语口语教练，服务对象是以中文为母语、需要在工作沟通和会议中用英语发言的学习者。
+你的任务：从原句中挑出最值得学的语块，让学习者能直接拿到自己的会议发言、汇报、讨论和邮件沟通里去用。
 
 英文原句：{english}
 
-## 第一步：切分语块
-按自然的表达意义，从原句中挑出 2–5 个最有学习价值的语块（句子很短时可以只有 1 个），按在原句中出现的顺序排列。
+## 第一步：挑选语块（宁缺毋滥）
+从原句中挑出 0–5 个语块，按在原句中出现的顺序排列。只挑真正能迁移到职场口语中的表达，宁可少挑，也不要凑数。
 
-什么算有学习价值：
-- 固定搭配、短语动词、习语或固定说法
-- 母语者常用的句子框架，比如 "The thing is, ..."、"It's not that ..., it's just ..."
-- 体现语气、态度和分寸的表达，比如缓和、强调、委婉、让步
+优先选择：
+1. 高频口语 / 职场表达：开会、汇报、协作、对齐进度时母语者常说的话，如 "circle back"、"on the same page"、"walk you through"
+2. 固定搭配（collocations）：如 "raise a concern"、"make a decision"、"meet the deadline"
+3. 惯用框架：可以套用的半固定句式，如 "as far as I ___"、"it turns out that ..."、"the thing is, ..."、"what I'm trying to say is ..."
+4. 语用功能块：在对话里承担功能的表达
+   - 委婉、缓和：如 "I'm not sure, but ..."、"I might be wrong, but ..."
+   - 转折、衔接：如 "that said"、"on the other hand"、"having said that"
+   - 表态、给出立场：如 "I'd argue that ..."、"I'm with you on that"
+   - 争取时间、组织思路：如 "let me think about that for a second"、"that's a good question"
 
-不要这样做：
+不要选：
+- 纯专业术语、行业名词、产品名、人名地名（如 "machine learning pipeline"、"quarterly EBITDA"）
+- 生僻词、书面腔或文学化的表达
+- 只在这个语境里成立、换个场合就用不上的一次性说法
+- 学习者一看就懂的基础词，以及 the、is、very 这类普通功能词
 - 不要逐词拆分，也不要把整句切成碎片
-- 不要单独挑出 the、is、very 这类普通功能词，也不要挑学习者一看就懂的基础词
-- 不要把短语写成词典条目，不要罗列多个义项，只解释它在本句中的用法
-- 不要用语法术语分析句子成分
+
+如果整句都是专业内容或一次性表达，没有符合标准的语块，chunks 返回空数组，并在 no_chunk_reason 里用一句中文说明原因。
 
 ## 第二步：逐个讲解
 对每个语块：
 1. text：从原句逐字照抄这个语块的连续片段，大小写、标点和词形都不能改。如果表达中间夹了别的词（如 take all of this into account），就把整段连同中间的词一起照抄。
-2. base_form：写出能迁移到其他句子的通用形式，用 sb / sth / doing 表示可以替换的部分。
-3. chunk_type：只能从 collocation、phrasal_verb、fixed_expression、sentence_frame、discourse_marker、hedge_softener 中选一个。
+2. base_form：写出能迁移到其他句子的通用形式，用 sb / sth / doing / ___ 表示可以替换的部分。
+3. chunk_type：只能从下面选一个：
+   workplace_expression（职场表达）、collocation（固定搭配）、sentence_frame（惯用框架）、phrasal_verb（短语动词）、
+   softener（委婉缓和）、transition（转折衔接）、stance（表态）、buying_time（争取时间）
 4. meaning_cn：写出它在本句中的自然中文意思，要像中文母语者平时会说的话，不要逐词硬译。
-5. nuance：用 1–2 句话说明母语者为什么在这里用它：传达了什么态度或意图，有什么潜台词，和更直白的说法相比差在哪里。这一项最重要，不能写成"表示……的意思"这种词典式解释。
-6. collocations：给出 2–4 个高频、真实的搭配或变体，用英文短语写。
-7. scenarios：用一句中文说明它通常出现在什么场合、对谁说、什么语域（口语、职场、书面等）。
-8. examples：给出 2 个自然例句，必须换到和原句不同的话题，两个例句的话题也要不同。例句要像真实对话或写作中会出现的句子，并附中文翻译。
+5. nuance：用 1–2 句话说明母语者为什么用它：传达了什么态度或意图，有什么潜台词，和更直白的说法相比差在哪里，在同事或上级面前听起来是什么感觉。这一项最重要，不能写成"表示……的意思"这种词典式解释。
+6. collocations：给出 2–4 个职场中高频、真实的搭配或变体，用英文短语写。
+7. scenarios：用一句中文说明在会议或工作沟通中什么时候用它，比如汇报进度、提出异议、回应提问、推进讨论、拒绝请求。
+8. examples：给出 2 个职场或会议场景中的自然口语例句，两个例句的场景要不同（如一个是周会汇报，一个是和同事讨论方案），不要照搬原句话题。例句要像会上真的会说出口的话，并附中文翻译。
 
 ## 第三步：整句
 - sentence_gist：用 1–2 句中文概括整句的意思，以及说话人的态度或意图。
 - cefr_level：整句表达的 CEFR 难度，只能是 A2、B1、B2、C1、C2 之一。
-- template：给出整句可复用的骨架，用 [...] 标出可替换的部分。
-- template_example：用这个骨架在新话题上造一句话。
+- template：给出整句可复用的骨架，用 [...] 标出可替换的部分；整句没有复用价值时填空字符串。
+- template_example：用这个骨架造一句会议或工作场景中能说的话；template 为空时也填空字符串。
+- no_chunk_reason：chunks 为空时说明原因，否则填空字符串。
 
 ## 输出
 只输出合法 JSON，不要 markdown，也不要任何额外文字：
 {{
-  "schema": "chunks_v1",
+  "schema": "chunks_v2",
   "sentence_gist": "",
   "cefr_level": "B1",
   "chunks": [
@@ -322,7 +452,8 @@ CHUNK_ANALYSIS_PROMPT = """\
     }}
   ],
   "template": "",
-  "template_example": ""
+  "template_example": "",
+  "no_chunk_reason": ""
 }}
 """
 

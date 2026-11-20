@@ -1393,6 +1393,7 @@
     .masthead-actions { display: flex; align-items: center; gap: 12px; z-index: 1; }
     .masthead-actions > span { color: var(--muted); font-size: 12px; }
     .masthead-actions strong { color: var(--brand-dark); font: 700 24px/1 Georgia, serif; }
+    .ai-analysis-regen { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
     .notebook-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
     .notebook-tools input[type="search"] { flex: 1 1 220px; min-width: 0; }
     .notebook-tools input, .notebook-tools select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font: inherit; font-size: 13px; }
@@ -1948,6 +1949,7 @@
   <nav class="workshop-tabs" aria-label="词汇记忆工坊子页">
     <button class="active" data-workshop-view="practice" type="button" onclick="setWorkshopView('practice')">词汇练习</button>
     <button data-workshop-view="story" type="button" onclick="setWorkshopView('story')">记忆故事</button>
+    <button data-workshop-view="recall" type="button" onclick="setWorkshopView('recall')">回忆测试</button>
   </nav>
 
   <section id="vocab-practice-view" class="workshop-view active">
@@ -2104,6 +2106,10 @@
         <button id="story-history-next" type="button" onclick="changeStoryHistoryPage(1)">下一页 →</button>
       </div>
     </section>
+  </section>
+
+  <section id="vocab-recall-view" class="workshop-view" hidden>
+    <div id="recall-test-root"></div>
   </section>
 </div>
 </div>
@@ -2350,6 +2356,9 @@
 <script src="/static/elt_credits.js?v=20260809-1"></script>
 <script>document.addEventListener("DOMContentLoaded",function(){if(window.eltCredits){eltCredits.annotate();}});</script>
 <script src="/static/natural-tts.js?v=20260809-1"></script>
+<script src="/static/word-coach.js?v=20261120-2"></script>
+<script src="/static/analysis-editor.js?v=20261120-1"></script>
+<script src="/static/recall-test.js?v=20261120-1"></script>
 <script>
 // ── Tab Routing ───────────────────────────────
 let _vocabLoaded = false;
@@ -4851,16 +4860,21 @@ function sentenceOralAnalysis(sentence) {
 }
 
 const CHUNK_TYPE_LABELS = {
-  collocation: '固定搭配',
+collocation: '固定搭配',
   phrasal_verb: '短语动词',
+  sentence_frame: '惯用框架',
+  workplace_expression: '职场表达',
+  softener: '委婉缓和',
+  transition: '转折衔接',
+  stance: '表态',
+  buying_time: '争取时间',
   fixed_expression: '固定表达',
-  sentence_frame: '句子框架',
   discourse_marker: '话语标记',
   hedge_softener: '缓和语气',
 };
 
 function isChunkAnalysis(data) {
-  return Boolean(data && data.schema === 'chunks_v1' && Array.isArray(data.chunks));
+  return Boolean(data && /^chunks_v\d+$/.test(String(data.schema || '')) && Array.isArray(data.chunks));
 }
 
 function renderChunkHighlightedSentence(text, chunks) {
@@ -4914,20 +4928,85 @@ function renderSentenceAnalysisPanel(sentence, errorMessage='') {
     ? `<div class="chunk-analysis">
         <div class="chunk-overview">
           <div class="chunk-overview-sentence">${renderChunkHighlightedSentence(String(sentence.text || ''), data.chunks)}</div>
-          ${data.sentence_gist || data.cefr_level ? `<div class="chunk-overview-gist">${esc(data.sentence_gist || '')}${data.cefr_level ? `<span class="chunk-cefr">${esc(data.cefr_level)}</span>` : ''}</div>` : ''}
+          ${data.sentence_gist || data.cefr_level ? `<div class="chunk-overview-gist">${esc(data.sentence_gist || '')}${data.cefr_level ? `<span class="chunk-cefr">${esc(data.cefr_level)}</span>` : ''}${data.edited ? '<span class="chunk-cefr">✎ 已编辑</span>' : ''}</div>` : ''}
         </div>
-        ${data.chunks.map((chunk, index) => renderChunkCard(chunk, index)).join('')}
+        ${data.chunks.length
+          ? data.chunks.map((chunk, index) => renderChunkCard(chunk, index)).join('')
+          : `<p class="sentence-analysis-item">${esc(data.no_chunk_reason || '这句没有值得重点学习的职场口语语块。')}</p>`}
         ${data.template ? `<div class="sentence-analysis-item"><span class="sentence-analysis-label">整句骨架</span><span class="sentence-analysis-template">${esc(data.template)}</span>${data.template_example ? `<div style="margin-top:6px">${esc(data.template_example)} ${chunkSpeakButton(data.template_example, '朗读示例')}</div>` : ''}</div>` : ''}
       </div>`
-    : `<p class="sentence-analysis-item">${Object.keys(data).length ? '这句保存的是旧版句式分析。' : ''}点击“生成语块解析”，拆出值得学的语块并讲解语感、搭配和可迁移例句。</p>`;
+    : `<p class="sentence-analysis-item">${Object.keys(data).length ? '这句保存的是旧版句式分析。' : ''}点击“生成语块解析”，挑出能用在会议和工作沟通里的语块，并讲解语感、搭配和职场例句。</p>`;
   return `<section class="sentence-workshop-shell">
     <div class="sentence-workshop-head">
-      <div><div class="detail-label">AI 语块解析</div><h3>${ready ? `${data.chunks.length} 个值得学的语块` : '地道表达拆解'}</h3></div>
-      <button type="button" data-billable-op="oral_analysis" onclick="openSentenceAnalysis(${sentence.id},${ready ? 'true' : 'false'})">${ready ? '重新解析' : '生成语块解析'}</button>
+      <div><div class="detail-label">AI 语块解析</div><h3>${ready ? (data.chunks.length ? `${data.chunks.length} 个值得学的语块` : '没有需要重点学的语块') : '职场表达拆解'}</h3></div>
+      <span>
+        ${ready ? `<button type="button" onclick="editSentenceAnalysis(${sentence.id})">✎ 编辑</button>` : ''}
+        <button type="button" data-billable-op="oral_analysis" onclick="${ready ? `reanalyzeSentence(${sentence.id})` : `openSentenceAnalysis(${sentence.id},false)`}">${ready ? '重新解析' : '生成语块解析'}</button>
+      </span>
     </div>
     ${errorMessage ? `<p style="color:var(--danger)">解析失败：${esc(errorMessage)}</p>` : ''}
-    ${body}
+    <div id="sentence-analysis-body-${sentence.id}">${body}</div>
   </section>`;
+}
+
+async function postAnalysisEdit(url, payload) {
+  const response = await fetch(url, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error || data.detail || '保存失败');
+  return data;
+}
+
+function editSentenceAnalysis(sentenceId) {
+  const sentence = _sentenceReviewData.find(item => Number(item.id) === Number(sentenceId));
+  const host = document.getElementById(`sentence-analysis-body-${sentenceId}`);
+  const analysis = sentenceOralAnalysis(sentence);
+  if (!sentence || !host || !isChunkAnalysis(analysis) || !window.AnalysisEditor) return;
+  AnalysisEditor.open(host, analysis, {
+    kind:'chunk',
+    onCancel:() => renderSentenceReviewList(),
+    onSave:async edited => {
+      const data = await postAnalysisEdit('/api/oral-analysis/save', {sentence_id:Number(sentenceId), analysis:edited});
+      applySentenceAnalysisPayload(sentence, data);
+      renderSentenceReviewList();
+    },
+  });
+}
+
+function reanalyzeSentence(sentenceId) {
+  const sentence = _sentenceReviewData.find(item => Number(item.id) === Number(sentenceId));
+  if (sentenceOralAnalysis(sentence)?.edited
+      && !confirm('这条语块解析你编辑过，重新解析会覆盖你的修改。确定继续吗？')) return;
+  openSentenceAnalysis(sentenceId, true);
+}
+
+function editVocabAnalysis(event, word) {
+  event.stopPropagation();
+  const entry = vocabData[word];
+  const section = event.currentTarget.closest('.detail-section');
+  const host = section?.querySelector('.wc-host');
+  const analysis = entry?.cached_analysis;
+  if (!host || !analysis || !window.AnalysisEditor) return;
+  const actions = section.querySelector('.ai-analysis-regen');
+  if (actions) actions.hidden = true;
+  const restore = data => {
+    host.innerHTML = WordCoach.render(data);
+    if (actions) actions.hidden = false;
+  };
+  AnalysisEditor.open(host, analysis, {
+    kind:'word',
+    onCancel:() => restore(analysis),
+    onSave:async edited => {
+      const data = await postAnalysisEdit('/api/word-analysis/save', {
+        word, target_type:entry.target_type || 'word', lemma:entry.lemma || '', analysis:edited,
+      });
+      entry.cached_analysis = data;
+      restore(data);
+      const meaning = host.closest('.word-card')?.querySelector('.word-meaning');
+      if (meaning) meaning.textContent = data.basic_meaning || '';
+    },
+  });
 }
 
 function renderSentencePatternPractice(sentence, errorMessage='') {
@@ -5835,6 +5914,7 @@ function buildVocabCard(word, entry) {
     an.en_definition || (an.collocations||[]).length || (an.synonyms||[]).length
     || (an.examples||[]).length || an.usage || an.ielts_note
   );
+  const isWordCoach = Boolean(window.WordCoach && WordCoach.isCoach(an));
   const contextItems = contexts.map((c,index)=>{
     return `<div class="context-item${index === contextIndex ? ' active' : ''}" role="button" tabindex="0" onclick="selectVocabContext(event,decodeURIComponent('${encodedWord}'),${index})" onkeydown="if(event.key==='Enter'){selectVocabContext(event,decodeURIComponent('${encodedWord}'),${index});}"><span class="context-lesson">${esc(c.lesson||'收藏语境')}</span>${highlightVocabTarget(c.sentence||'',word)}</div>`;
   }).join('');
@@ -5903,11 +5983,25 @@ function buildVocabCard(word, entry) {
         </button>
         <span class="analysis-generate-status" aria-live="polite"></span>
       </div>`}
+      ${isWordCoach ? `<div class="detail-section">
+        <div class="detail-label">AI 单词教练</div>
+        <div class="wc-host">${WordCoach.render(an)}</div>
+        <div class="ai-analysis-regen">
+          <button type="button" onclick="editVocabAnalysis(event,decodeURIComponent('${encodedWord}'))">✎ 编辑解析</button>
+          <button type="button" ${assessed === 'true' ? '' : 'disabled'} onclick="generateVocabAnalysis(event,decodeURIComponent('${encodedWord}'))">重新生成解析</button>
+          <span class="analysis-generate-status" aria-live="polite"></span>
+        </div>
+      </div>` : `
+      ${hasDeepAnalysis ? `<div class="detail-section ai-analysis-regen">
+        <span class="detail-value">这是旧版解析。</span>
+        <button type="button" ${assessed === 'true' ? '' : 'disabled'} onclick="generateVocabAnalysis(event,decodeURIComponent('${encodedWord}'))">用新版单词教练重新解析</button>
+        <span class="analysis-generate-status" aria-live="polite"></span>
+      </div>` : ''}
       ${an.en_definition?`<div class="detail-section"><div class="detail-label">英文释义</div><div class="detail-value">${renderVocabReadingText(an.en_definition)}</div></div>`:''}
       ${collocations?`<div class="detail-section"><div class="detail-label">常见搭配</div><div class="collocations">${collocations}</div></div>`:''}
       ${synonyms?`<div class="detail-section"><div class="detail-label">近义词对比</div>${synonyms}</div>`:''}
       ${examples?`<div class="detail-section"><div class="detail-label">例句</div>${examples}</div>`:''}
-      ${usage}${ielts}
+      ${usage}${ielts}`}
       ${contextItems?`<div class="detail-section"><div class="detail-label">其他收藏语境</div><div class="context-switcher">${contextItems}</div></div>`:''}
       </div>
       <div class="detail-section practice-section">
@@ -5965,7 +6059,45 @@ function setWorkshopView(view) {
   const story = document.getElementById('vocab-story-view');
   if (practice) { practice.hidden = view !== 'practice'; practice.classList.toggle('active', view === 'practice'); }
   if (story) { story.hidden = view !== 'story'; story.classList.toggle('active', view === 'story'); }
+  const recall = document.getElementById('vocab-recall-view');
+  if (recall) { recall.hidden = view !== 'recall'; recall.classList.toggle('active', view === 'recall'); }
   if (view === 'story') loadStoryHistory();
+  if (view === 'recall') openRecallTest();
+}
+
+// ── 回忆测试 ──────────────────────────────────────────
+let _recallTestMounted = false;
+
+function isRecallDue(entry) {
+  if (entry.next_review) return String(entry.next_review).slice(0, 10) <= todayKey();
+  if (!entry.last_studied) return true;
+  const count = entry.count || 1;
+  const last = new Date(`${entry.last_studied}T00:00:00`);
+  const today = new Date(`${todayKey()}T00:00:00`);
+  const daysSince = Math.floor((today - last) / 86400000);
+  return daysSince >= INTERVALS[Math.min(count - 1, INTERVALS.length - 1)];
+}
+
+function openRecallTest() {
+  const root = document.getElementById('recall-test-root');
+  if (!root || !window.RecallTest) return;
+  if (!_recallTestMounted) {
+    _recallTestMounted = true;
+    RecallTest.mount(root, {
+      getVocab: () => vocabData,
+      isDue: isRecallDue,
+      onApplied: changes => {
+        for (const change of changes) {
+          const entry = vocabData[change.word];
+          if (!entry || !change.current) continue;
+          entry.familiarity = change.current.familiarity;
+          entry.next_review = change.current.next_review || '';
+        }
+        renderVocabList();
+      },
+    });
+  }
+  RecallTest.show();
 }
 
 function focusNextVocabCard() {
@@ -6050,15 +6182,17 @@ function toggleVocabCardFromButton(button) {
 async function generateVocabAnalysis(event, word) {
   event.stopPropagation();
   if (!_assessedWords.has(word)) return;
+  if (vocabData[word]?.cached_analysis?.edited
+      && !confirm('这条单词解析你编辑过，重新生成会覆盖你的修改。确定继续吗？')) return;
   const button = event.currentTarget;
-  const section = button.closest('.ai-analysis-empty');
+  const section = button.closest('.ai-analysis-empty, .ai-analysis-regen');
   const status = section?.querySelector('.analysis-generate-status');
   const entry = vocabData[word] || {};
   const contexts = entry.contexts || [];
   const contextIndex = Math.min(Number(entry._active_context_index || 0), Math.max(0, contexts.length - 1));
   const context = contexts[contextIndex] || {};
   button.disabled = true;
-  button.textContent = 'AI 正在生成解析…';
+  button.textContent = 'AI 单词教练正在准备讲解（约 20–40 秒）…';
   if (status) status.textContent = '';
   try {
     const response = await eltCredits.billableFetch('word_analysis', '/analyze-word', {

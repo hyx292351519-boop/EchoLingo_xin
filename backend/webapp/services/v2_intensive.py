@@ -241,6 +241,19 @@ def build_intensive_document(
                 }
             )
 
+    # 语块解析按句子原文存储：未收藏的句子也要把已生成的解析带回页面
+    stored = db.get_v2_sentence_analyses_by_text(
+        [item["text"] for item in sentences if not item.get("oral_analysis")]
+    )
+    for item in sentences:
+        if item.get("oral_analysis"):
+            continue
+        match = stored.get(" ".join(item["text"].lower().split()))
+        if match:
+            item["oral_analysis"] = match["analysis"]
+            if item.get("sentence_id") is None:
+                item["sentence_id"] = match["sentence_id"]
+
     return {
         "lesson": lesson,
         "lesson_words": sorted(lesson_words),

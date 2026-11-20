@@ -431,9 +431,9 @@ def test_analyze_word_persists_deep_analysis_without_incrementing_review_count(t
     )
 
     generated = {
-        "en_definition": "the gradual destruction of something",
-        "collocations": ["tooth decay"],
-        "examples": ["The fruit began to decay."],
+        "concept": {"core_en": "the gradual destruction of something"},
+        "collocation_groups": [{"category": "noun", "items": [{"phrase": "tooth decay"}]}],
+        "sentence_building": {"examples": [{"scene": "daily", "en": "The fruit began to decay."}]},
     }
 
     def create(**_kwargs):
@@ -454,7 +454,8 @@ def test_analyze_word_persists_deep_analysis_without_incrementing_review_count(t
 
     assert response.status_code == 200
     assert response.json()["basic_meaning"] == "腐烂"
-    assert response.json()["en_definition"] == generated["en_definition"]
+    assert response.json()["en_definition"] == generated["concept"]["core_en"]
+    assert response.json()["schema"] == "word_coach_v1"
     stored = client.get("/vocab-log").json()["decay"]
     assert stored["count"] == 1
     assert stored["cached_analysis"]["basic_meaning"] == "腐烂"
