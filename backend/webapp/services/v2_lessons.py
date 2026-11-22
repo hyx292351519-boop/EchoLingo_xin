@@ -531,9 +531,45 @@ def _begin_reading_tts(*, username: str, idempotency_key: str,
     return op, None
 
 
+_DEFAULT_READING_TITLE = "Reading Passage"
+_DERIVED_TITLE_MAX_WORDS = 8
+_DERIVED_TITLE_MAX_CHARS = 60
+
+
+def _reading_text_source_url(text: str) -> str:
+    """粘贴文本课程按内容去重：不同文本 → 不同课程，同一文本重复提交 → 复用。
+
+    空白差异（换行/多空格）不影响身份，避免同一篇文章因复制方式不同被建成两门课。
+    """
+    normalized = " ".join(str(text or "").split())
+    return f"manual:{hashlib.sha1(normalized.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _derive_reading_title(blocks: list[dict]) -> str:
+    """未提供标题时取正文开头几个词作标题，课程列表里才能区分多篇粘贴文本。"""
+    first = next((str(b.get("text") or "").strip() for b in blocks if str(b.get("text") or "").strip()), "")
+    if not first:
+        return _DEFAULT_READING_TITLE
+    words = first.split()
+    title = " ".join(words[:_DERIVED_TITLE_MAX_WORDS])
+    truncated = len(words) > _DERIVED_TITLE_MAX_WORDS
+    if len(title) > _DERIVED_TITLE_MAX_CHARS:
+        title = title[:_DERIVED_TITLE_MAX_CHARS].rstrip()
+        truncated = True
+    return f"{title}…" if truncated else title
+
+
 def start_reading_text_lesson(title: str, text: str, *, tts: bool = False,
                               username: str = "", idempotency_key: str = "",
                               source_kind: str = "reading_text") -> dict:
+    source_url = _reading_text_source_url(text)
+    existing = db.get_v2_lesson_by_source("reading_text", source_url)
+    if existing and db.get_v2_reading_blocks(int(existing["id"])):
+        # 同一文本已建过课：直接复用，不重写段落（避免清掉笔记/分析等关联数据）
+        return _reuse_reading_text_lesson(existing, text, tts=tts, username=username,
+                                          idempotency_key=idempotency_key,
+                                          source_kind=source_kind)
+
     op: dict | None = None
     if tts:
         # char_count/内容哈希均服务端可信（text 原文）；失败时课程/任务均未创建
@@ -548,10 +584,12 @@ def start_reading_text_lesson(title: str, text: str, *, tts: bool = False,
                     "workspace_url": f"/workspace/{lesson['id']}",
                     "replayed": True}
     try:
-        imported = build_reading_blocks_from_text(text, title=title or "Reading Passage")
+        imported = build_reading_blocks_from_text(text, title=title or _DEFAULT_READING_TITLE)
+        if not title or title.strip() == _DEFAULT_READING_TITLE:
+            imported["title"] = _derive_reading_title(imported["blocks"])
         lesson = db.create_v2_lesson(
             source_type="reading_text",
-            source_url=f"manual:{imported['title']}",
+            source_url=source_url,
             video_id="",
             title=imported["title"],
             duration=0,
@@ -572,6 +610,29 @@ def start_reading_text_lesson(title: str, text: str, *, tts: bool = False,
             enqueue_reading_tts(lesson["id"])
     lesson = db.get_v2_lesson(lesson["id"]) or lesson
     return {"lesson": lesson, "blocks": imported["blocks"], "workspace_url": f"/workspace/{lesson['id']}"}
+
+
+def _reuse_reading_text_lesson(lesson: dict, text: str, *, tts: bool, username: str,
+                               idempotency_key: str, source_kind: str) -> dict:
+    """同内容重复提交：返回已有课程；仅当请求朗读且尚未生成时才计费并排队 TTS。"""
+    lesson_id = int(lesson["id"])
+    if tts and not reading_tts_is_cached(lesson_id):
+        op, replay_op = _begin_reading_tts(
+            username=username, idempotency_key=idempotency_key,
+            identity=_reading_tts_identity(text, source_kind))
+        if replay_op is not None:
+            lesson = _reading_tts_replay_lesson(replay_op)
+            lesson_id = int(lesson["id"])
+        else:
+            if op is not None:
+                credit_meter.attach_reference(op["id"], "v2_lesson", str(lesson_id))
+            with credit_meter.use_operation(op):
+                enqueue_reading_tts(lesson_id)
+    lesson = db.get_v2_lesson(lesson_id) or lesson
+    return {"lesson": lesson,
+            "blocks": db.get_v2_reading_blocks(lesson_id),
+            "workspace_url": f"/workspace/{lesson_id}",
+            "cached": True}
 
 
 def start_reading_pdf_lesson(local_path: str, *, title: str = "", tts: bool = False,

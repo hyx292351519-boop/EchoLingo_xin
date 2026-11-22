@@ -3192,6 +3192,12 @@ async function waitForTranslationReadiness(lessonId, workspaceUrl) {
   }
 }
 
+// 文本类课程（粘贴 / 上传 / PDF / 网盘文本）建好后直接进入精读界面
+function intensiveUrlFor(workspaceUrl) {
+  const m = String(workspaceUrl || '').match(/^\/workspace\/(\d+)\/?(?:[?#].*)?$/);
+  return m ? `/workspace/${m[1]}/intensive` : workspaceUrl;
+}
+
 async function uploadReadingFile(file) {
   if (!file) {
     alert('请先选择 Reading 文件');
@@ -3213,8 +3219,8 @@ async function uploadReadingFile(file) {
     if (!resp.ok) throw new Error(data.detail || '无法导入 Reading 文件');
     const workspaceUrl = data.workspace_url || (data.job_id ? await pollReadingUpload(data.job_id) : '');
     if (!workspaceUrl) throw new Error('Reading 导入完成，但没有课程地址');
-    finishInlineProgress('完成，正在打开 Reading 工作台…');
-    window.location.href = workspaceUrl;
+    finishInlineProgress('完成，正在打开精读界面…');
+    window.location.href = intensiveUrlFor(workspaceUrl);
   } catch(e) {
     failInlineProgress(e.message);
     alert(e.message);
@@ -3302,8 +3308,8 @@ async function startGeneration() {
           if (!r.ok) throw new Error(data.detail || '无法开始 Reading');
           const workspaceUrl = data.workspace_url || (data.job_id ? await pollReadingUpload(data.job_id) : '');
           if (!workspaceUrl) throw new Error('Reading 导入完成，但没有课程地址');
-          finishInlineProgress('完成，正在打开 Reading 工作台…');
-          window.location.href = workspaceUrl;
+          finishInlineProgress('完成，正在打开精读界面…');
+          window.location.href = intensiveUrlFor(workspaceUrl);
           return;
         }
         // 音视频：走与浏览器上传相同的 v2 建课链路，Whisper 模型取本卡选择
@@ -3398,8 +3404,8 @@ async function startGeneration() {
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || '无法开始 Reading');
-      finishInlineProgress('完成，正在打开 Reading 工作台…');
-      window.location.href = data.workspace_url;
+      finishInlineProgress('完成，正在打开精读界面…');
+      window.location.href = intensiveUrlFor(data.workspace_url);
     } catch(e) {
       failInlineProgress(e.message);
       alert(e.message);
@@ -3483,8 +3489,8 @@ async function startGeneration() {
           });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || '无法开始课程');
-      finishInlineProgress('完成，正在打开工作台…');
-      window.location.href = data.workspace_url;
+      finishInlineProgress('完成，正在打开精读界面…');
+      window.location.href = intensiveUrlFor(data.workspace_url);
     } catch(e) {
       failInlineProgress(e.message);
       alert(e.message);
@@ -8268,7 +8274,7 @@ function pollBaiduPanImport(jobId) {
             const workspaceUrl = data.workspace_url || (data.job_id ? await pollReadingUpload(data.job_id) : '');
             if (!workspaceUrl) throw new Error('Reading 导入完成，但没有课程地址');
             badge.textContent = '已导入';
-            window.location.href = workspaceUrl;
+            window.location.href = intensiveUrlFor(workspaceUrl);
           } catch (e2) {
             text.textContent = '';
             badge.textContent = '未开始';

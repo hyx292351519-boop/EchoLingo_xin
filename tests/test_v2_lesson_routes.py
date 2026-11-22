@@ -403,6 +403,88 @@ def test_start_reading_text_lesson_and_fetch_blocks(tmp_path, monkeypatch):
     ]
 
 
+def test_pasting_two_different_texts_creates_two_lessons(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    client = TestClient(create_app())
+
+    def start(text):
+        resp = client.post("/api/v2/lessons/start", json={
+            "source_type": "reading_text",
+            "title": "Reading Passage",
+            "text": text,
+        })
+        assert resp.status_code == 200
+        return resp.json()["lesson"]
+
+    first = start("Climate change reshapes coastal cities.\n\nSea levels keep rising.")
+    second = start("Bees pollinate most flowering crops.\n\nTheir decline worries farmers.")
+
+    assert first["id"] != second["id"]
+    assert first["title"] == "Climate change reshapes coastal cities."
+    assert second["title"] == "Bees pollinate most flowering crops."
+    first_blocks = client.get(f"/api/v2/lessons/{first['id']}/reading").json()["blocks"]
+    assert [b["text"] for b in first_blocks] == [
+        "Climate change reshapes coastal cities.",
+        "Sea levels keep rising.",
+    ]
+
+
+def test_pasting_same_text_again_reuses_lesson_without_rewriting_blocks(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    client = TestClient(create_app())
+    payload = {"source_type": "reading_text", "title": "", "text": "One paragraph only here."}
+
+    def block_rows(lesson_id):
+        with db._db() as conn:
+            return [tuple(r) for r in conn.execute(
+                "SELECT id, created_at FROM v2_reading_blocks WHERE lesson_id=? ORDER BY id",
+                (lesson_id,),
+            ).fetchall()]
+
+    first = client.post("/api/v2/lessons/start", json=payload).json()
+    rows_before = block_rows(first["lesson"]["id"])
+    # 空白差异不应产生新课程
+    payload["text"] = "  One   paragraph\nonly here.  "
+    again = client.post("/api/v2/lessons/start", json=payload).json()
+
+    assert again["lesson"]["id"] == first["lesson"]["id"]
+    assert again.get("cached") is True
+    assert rows_before and block_rows(first["lesson"]["id"]) == rows_before
+
+
+def test_pasted_text_lesson_opens_directly_in_intensive_view(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    client = TestClient(create_app())
+    resp = client.post("/api/v2/lessons/start", json={
+        "source_type": "reading_text",
+        "title": "Reading Passage",
+        "text": "Glaciers are retreating quickly.\n\nScientists track the change.",
+    })
+    lesson_id = resp.json()["lesson"]["id"]
+
+    page = client.get(f"/workspace/{lesson_id}/intensive")
+    assert page.status_code == 200
+    data = client.get(f"/api/v2/lessons/{lesson_id}/intensive")
+    assert data.status_code == 200
+
+
+def test_derive_reading_title_truncates_long_first_paragraph():
+    from webapp.services.v2_lessons import _derive_reading_title
+
+    title = _derive_reading_title([{"text": "one two three four five six seven eight nine ten"}])
+    assert title == "one two three four five six seven eight…"
+    assert _derive_reading_title([]) == "Reading Passage"
+
+
 def test_reading_highlights_are_initial_lesson_words_until_cancelled(tmp_path, monkeypatch):
     import db
     from fastapi_server import create_app

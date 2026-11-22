@@ -367,3 +367,11 @@ def test_inline_javascript_is_syntax_valid_when_node_is_available():
         assert result.returncode == 0, result.stderr
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_text_course_creation_redirects_to_intensive_view():
+    assert "function intensiveUrlFor(workspaceUrl)" in INDEX_HTML
+    paste_branch = INDEX_HTML.split("if (_detectedSource === 'reading_text') {", 1)[1].split("\n  }\n}", 1)[0]
+    assert "window.location.href = intensiveUrlFor(data.workspace_url);" in paste_branch
+    upload_fn = INDEX_HTML.split("async function uploadReadingFile(file) {", 1)[1].split("\n}\n", 1)[0]
+    assert "window.location.href = intensiveUrlFor(workspaceUrl);" in upload_fn
