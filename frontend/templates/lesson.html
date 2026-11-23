@@ -1466,6 +1466,7 @@
 <script>document.addEventListener("DOMContentLoaded",function(){if(window.eltCredits){eltCredits.annotate();}});</script>
 <script src="/static/natural-tts.js?v=20260809-1"></script>
   {% endif %}
+  <script src="/static/chunk-analysis.js?v=20261123-1"></script>
   <script>
     const segments = {{ segments_json | tojson }};
     const analyses = {{ analyses_json | tojson }};
@@ -3545,27 +3546,22 @@
       } catch { resultEl.textContent = '无法连接 localhost:5173，请先启动 server.py'; }
     }
 
-    const CHUNK_TYPE_LABELS = {
-      collocation: '固定搭配', phrasal_verb: '短语动词', sentence_frame: '惯用框架',
-      workplace_expression: '职场表达', softener: '委婉缓和', transition: '转折衔接',
-      stance: '表态', buying_time: '争取时间',
-      fixed_expression: '固定表达', discourse_marker: '话语标记', hedge_softener: '缓和语气',
-    };
-
     function renderOralModules(data) {
       if (data.error) return `<span style="color:var(--danger)">${escapeHtml(data.error)}</span>`;
       const chunks = Array.isArray(data.chunks) ? data.chunks : [];
       const lvl = escapeHtml(data.cefr_level || '');
+      const transfer = ChunkAnalysis.transfer(data);
       const chunkModules = chunks.map((chunk, index) => {
         const baseForm = chunk.base_form && chunk.base_form !== chunk.text ? chunk.base_form : '';
         const examples = Array.isArray(chunk.examples) ? chunk.examples : [];
         const collocations = Array.isArray(chunk.collocations) ? chunk.collocations : [];
         return `<div class="oral-module">
-          <div class="oral-module-label">语块 ${index + 1} · ${escapeHtml(CHUNK_TYPE_LABELS[chunk.chunk_type] || chunk.chunk_type || '表达')}</div>
+          <div class="oral-module-label">语块 ${index + 1} · ${chunk.coach ? `${chunk.coach === 'presentation' ? '讲解' : '口语'} · ` : ''}${escapeHtml(ChunkAnalysis.typeLabel(chunk.chunk_type))}</div>
           <div class="oral-module-body">
             <strong>${escapeHtml(chunk.text || '')}</strong>${baseForm ? ` <span style="color:var(--muted)">${escapeHtml(baseForm)}</span>` : ''}
             ${chunk.meaning_cn ? `<div>${escapeHtml(chunk.meaning_cn)}</div>` : ''}
-            ${chunk.nuance ? `<div><b>语感：</b>${escapeHtml(chunk.nuance)}</div>` : ''}
+            ${chunk.nuance ? `<div><b>${chunk.coach ? '语境作用' : '语感'}：</b>${escapeHtml(chunk.nuance)}</div>` : ''}
+            ${ChunkAnalysis.chunkExtraFields(chunk).map(([label, text]) => `<div><b>${escapeHtml(label)}：</b>${escapeHtml(text)}</div>`).join('')}
             ${collocations.length ? `<div><b>常见搭配：</b>${collocations.map(escapeHtml).join(' / ')}</div>` : ''}
             ${chunk.scenarios ? `<div><b>使用场景：</b>${escapeHtml(chunk.scenarios)}</div>` : ''}
             ${examples.map(example => `<div class="oral-example">${escapeHtml(example.en || '')}${example.cn ? ` — ${escapeHtml(example.cn)}` : ''}</div>`).join('')}
@@ -3580,7 +3576,7 @@
             ${lvl ? `<span class="oral-cefr-badge">${lvl}</span>` : ''}
           </div>
         </div>
-        ${chunkModules || `<div class="oral-module"><div class="oral-module-body">${escapeHtml(data.no_chunk_reason || '这句没有值得重点学习的职场口语语块。')}</div></div>`}
+        ${chunkModules || `<div class="oral-module"><div class="oral-module-body">${escapeHtml(data.no_chunk_reason || '这句没有值得重点学习的口语或讲解语块。')}</div></div>`}
         <div class="oral-module">
           <div class="oral-module-label">整句骨架</div>
           <div class="oral-module-body">
@@ -3588,6 +3584,17 @@
             ${data.template_example ? `<div class="oral-example">${escapeHtml(data.template_example)}</div>` : ''}
           </div>
         </div>
+        ${ChunkAnalysis.spokenFeatures(data).length ? `<div class="oral-module">
+          <div class="oral-module-label">口语现象</div>
+          <div class="oral-module-body">${ChunkAnalysis.spokenFeatures(data).map(item => `<div><b>${escapeHtml(item.text)}</b> · ${escapeHtml(item.feature)}${item.is_error ? '（不要模仿）' : ''}${item.note ? ` — ${escapeHtml(item.note)}` : ''}</div>`).join('')}</div>
+        </div>` : ''}
+        ${transfer ? `<div class="oral-module">
+          <div class="oral-module-label">表达迁移${transfer.intent ? ` · ${escapeHtml(transfer.intent)}` : ''}</div>
+          <div class="oral-module-body">
+            ${transfer.rows.map(([label, en, cn]) => `<div class="oral-example"><b>${escapeHtml(label)}：</b>${escapeHtml(en)}${cn ? ` — ${escapeHtml(cn)}` : ''}</div>`).join('')}
+            ${transfer.note ? `<div style="color:var(--muted)">${escapeHtml(transfer.note)}</div>` : ''}
+          </div>
+        </div>` : ''}
       </div>`;
     }
 

@@ -529,6 +529,10 @@
     .chunk-meaning { font-weight: 700; }
     .chunk-nuance { margin: 7px 0; padding: 7px 10px; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; background: #fff9e9; }
     .chunk-field { margin-top: 5px; }
+    .chunk-caution { color: #8a4a18; }
+    .chunk-warn { background: #fbe8e5; color: #a8483f; }
+    .chunk-coach-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 4px 0 -2px; color: var(--brand-dark); font-size: 13px; }
+    .chunk-coach-head span { color: var(--muted); font-size: 12px; }
     .chunk-label { display: inline-block; min-width: 4.5em; margin-right: 6px; color: var(--brand-dark); font-size: 11px; font-weight: 850; letter-spacing: .04em; }
     .chunk-collocations { display: inline-flex; flex-wrap: wrap; gap: 5px; vertical-align: middle; }
     .chunk-collocations code { padding: 1px 6px; border-radius: 5px; background: #f2f5f0; font-size: 12.5px; }
@@ -690,7 +694,8 @@
 <script>document.addEventListener("DOMContentLoaded",function(){if(window.eltCredits){eltCredits.annotate();}});</script>
 <script src="/static/natural-tts.js?v=20260809-1"></script>
 <script src="/static/word-coach.js?v=20261120-2"></script>
-<script src="/static/analysis-editor.js?v=20261120-1"></script>
+<script src="/static/chunk-analysis.js?v=20261123-1"></script>
+<script src="/static/analysis-editor.js?v=20261123-1"></script>
   <script>
     const LESSON_ID = {{ lesson_id }};
     const targetSentenceParam = new URLSearchParams(window.location.search).get('sentence_key');
@@ -954,10 +959,10 @@
             </section>
 
             <section class="v1-module" data-v1-module="oral-expression">
-              <div class="v1-module-head"><h3>③ 语块解析</h3><span class="v1-module-kicker">职场口语</span></div>
+              <div class="v1-module-head"><h3>③ 语块解析</h3><span class="v1-module-kicker">口语 + 讲解</span></div>
               <div class="v1-module-body">
                 <div class="module-actions"><button class="primary-action" type="button" data-generate-oral="${sentence.key}" data-force="${isChunkAnalysis(oral) ? 'true' : 'false'}">${isChunkAnalysis(oral) ? '重新解析' : 'AI 语块解析'}</button><button type="button" data-edit-oral="${sentence.key}"${isChunkAnalysis(oral) ? '' : ' hidden'}>✎ 编辑</button></div>
-                <div data-oral-result="${sentence.key}">${oral ? renderOralAnalysis(oral, sentence.key) : '<div class="filter-note">挑出能直接用在会议和工作沟通里的语块：职场表达、固定搭配、惯用框架和委婉、转折、表态等功能表达。</div>'}</div>
+                <div data-oral-result="${sentence.key}">${oral ? renderOralAnalysis(oral, sentence.key) : '<div class="filter-note">两位教练拆解这句：Conversation Coach 找母语者常用的语气词、弱化表达和口语习惯说法；Presentation Coach 找能直接用于讲解、汇报和 PPT 演讲的表达语块。</div>'}</div>
               </div>
             </section>
 
@@ -1613,20 +1618,6 @@
       });
     }
 
-    const CHUNK_TYPE_LABELS = {
-collocation: '固定搭配',
-      phrasal_verb: '短语动词',
-      sentence_frame: '惯用框架',
-      workplace_expression: '职场表达',
-      softener: '委婉缓和',
-      transition: '转折衔接',
-      stance: '表态',
-      buying_time: '争取时间',
-      fixed_expression: '固定表达',
-      discourse_marker: '话语标记',
-      hedge_softener: '缓和语气',
-    };
-
     function isChunkAnalysis(data) {
       return Boolean(data && /^chunks_v\d+$/.test(String(data.schema || '')) && Array.isArray(data.chunks));
     }
@@ -1664,14 +1655,30 @@ collocation: '固定搭配',
           <span class="chunk-index">语块 ${index + 1}</span>
           <span class="chunk-text">${escapeHtml(chunk.text)}</span>
           ${baseForm ? `<span class="chunk-base">${escapeHtml(baseForm)}</span>` : ''}
-          <span class="chunk-type">${escapeHtml(CHUNK_TYPE_LABELS[chunk.chunk_type] || chunk.chunk_type || '表达')}</span>
+          <span class="chunk-type">${escapeHtml(ChunkAnalysis.typeLabel(chunk.chunk_type))}</span>
           ${chunkSpeakButton(baseForm || chunk.text, '朗读语块')}
         </div>
         ${chunk.meaning_cn ? `<div class="chunk-meaning">${escapeHtml(chunk.meaning_cn)}</div>` : ''}
-        ${chunk.nuance ? `<div class="chunk-nuance"><span class="chunk-label">语感</span>${escapeHtml(chunk.nuance)}</div>` : ''}
+        ${chunk.nuance ? `<div class="chunk-nuance"><span class="chunk-label">${chunk.coach ? '语境作用' : '语感'}</span>${escapeHtml(chunk.nuance)}</div>` : ''}
+        ${ChunkAnalysis.chunkExtraFields(chunk).map(([label, text]) => `<div class="chunk-field${label === '使用注意' ? ' chunk-caution' : ''}"><span class="chunk-label">${escapeHtml(label)}</span>${escapeHtml(text)}</div>`).join('')}
         ${collocations.length ? `<div class="chunk-field"><span class="chunk-label">常见搭配</span><span class="chunk-collocations">${collocations.map(item => `<code>${escapeHtml(item)}</code>`).join('')}</span></div>` : ''}
         ${chunk.scenarios ? `<div class="chunk-field"><span class="chunk-label">使用场景</span>${escapeHtml(chunk.scenarios)}</div>` : ''}
         ${examples.length ? `<div class="chunk-field"><span class="chunk-label">迁移例句</span><ul class="chunk-examples">${examples.map(example => `<li>${linkifyEnglish(example.en, key)} ${chunkSpeakButton(example.en, '朗读例句')}${example.cn ? `<span class="chunk-example-cn">${escapeHtml(example.cn)}</span>` : ''}</li>`).join('')}</ul></div>` : ''}
+      </div>`;
+    }
+
+    function renderSpokenFeatures(data) {
+      const features = ChunkAnalysis.spokenFeatures(data);
+      if (!features.length) return '';
+      return `<div class="oral-module"><span class="oral-module-label">口语现象</span><ul class="chunk-examples">${features.map(item => `<li><b>${escapeHtml(item.text)}</b> · ${escapeHtml(item.feature)}${item.is_error ? '<span class="chunk-cefr chunk-warn">不要模仿</span>' : ''}${item.note ? `<span class="chunk-example-cn">${escapeHtml(item.note)}</span>` : ''}</li>`).join('')}</ul></div>`;
+    }
+
+    function renderChunkTransfer(data, key) {
+      const transfer = ChunkAnalysis.transfer(data);
+      if (!transfer) return '';
+      return `<div class="oral-module"><span class="oral-module-label">表达迁移${transfer.intent ? ` · ${escapeHtml(transfer.intent)}` : ''}</span>
+        ${transfer.rows.length ? `<ul class="chunk-examples">${transfer.rows.map(([label, en, cn]) => `<li><span class="chunk-label">${escapeHtml(label)}</span>${linkifyEnglish(en, key)} ${chunkSpeakButton(en, '朗读')}${cn ? `<span class="chunk-example-cn">${escapeHtml(cn)}</span>` : ''}</li>`).join('')}</ul>` : ''}
+        ${transfer.note ? `<div class="chunk-example-cn">${escapeHtml(transfer.note)}</div>` : ''}
       </div>`;
     }
 
@@ -1687,12 +1694,14 @@ collocation: '固定搭配',
       return `<div class="chunk-analysis">
         <div class="chunk-overview">
           ${sentenceText ? `<div class="chunk-overview-sentence">${renderChunkHighlightedSentence(sentenceText, data.chunks)}</div>` : ''}
-          ${data.sentence_gist || data.cefr_level ? `<div class="chunk-overview-gist">${escapeHtml(data.sentence_gist || '')}${data.cefr_level ? `<span class="chunk-cefr">${escapeHtml(data.cefr_level)}</span>` : ''}${data.edited ? '<span class="chunk-cefr">✎ 已编辑</span>' : ''}</div>` : ''}
+          ${data.sentence_gist || data.cefr_level ? `<div class="chunk-overview-gist">${escapeHtml(data.sentence_gist || '')}${data.cefr_level ? `<span class="chunk-cefr">${escapeHtml(data.cefr_level)}</span>` : ''}${ChunkAnalysis.textStyleLabel(data) ? `<span class="chunk-cefr">${escapeHtml(ChunkAnalysis.textStyleLabel(data))}</span>` : ''}${data.edited ? '<span class="chunk-cefr">✎ 已编辑</span>' : ''}</div>` : ''}
         </div>
         ${data.chunks.length
-          ? data.chunks.map((chunk, index) => renderChunkCard(chunk, index, key)).join('')
-          : `<div class="filter-note">${escapeHtml(data.no_chunk_reason || '这句没有值得重点学习的职场口语语块。')}</div>`}
+          ? ChunkAnalysis.groupByCoach(data.chunks).map(group => `${group.title ? `<div class="chunk-coach-head"><b>${escapeHtml(group.title)}</b><span>${escapeHtml(group.intro)}</span></div>` : ''}${group.items.map(({chunk, index}) => renderChunkCard(chunk, index, key)).join('')}`).join('')
+          : `<div class="filter-note">${escapeHtml(data.no_chunk_reason || '这句没有值得重点学习的口语或讲解语块。')}</div>`}
+        ${renderSpokenFeatures(data)}
         ${templateText ? `<div class="oral-module"><span class="oral-module-label">整句骨架</span><code class="oral-template">${linkifyEnglish(templateText, key)}</code>${exampleText ? `<div style="margin-top:6px">${linkifyEnglish(exampleText, key)} ${chunkSpeakButton(exampleText, '朗读示例')}</div>` : ''}</div>` : ''}
+        ${renderChunkTransfer(data, key)}
       </div>`;
     }
 

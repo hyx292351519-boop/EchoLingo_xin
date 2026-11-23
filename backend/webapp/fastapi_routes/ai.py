@@ -13,9 +13,15 @@ from fastapi.responses import JSONResponse
 from prompts import (
     CONNECTED_SPEECH_PROMPT,
     HINT_PROMPT,
+    CHUNK_ANALYSIS_COMPATIBLE_SCHEMAS,
     CHUNK_ANALYSIS_PROMPT,
     CHUNK_ANALYSIS_SCHEMA,
+    CHUNK_COACHES,
+    CHUNK_REGISTERS,
+    CHUNK_TYPE_COACH,
     CHUNK_TYPES,
+    LEGACY_CHUNK_TYPES,
+    TEXT_STYLES,
     LISTENING_RETELL_PROMPT,
     CORRECTION_PROMPT,
     PRACTICE_EXAMPLE_PROMPT,
@@ -709,12 +715,122 @@ def _locate_chunk(sentence: str, chunk_text: str) -> str:
     return match.group(0) if match else ""
 
 
-# 模型偶尔沿用旧版类型名：映射到新分类，避免一律落入默认类型
+# 模型偶尔沿用旧版（v2 职场口语）类型名：映射到 v3 分类，避免一律落入默认类型
 _LEGACY_CHUNK_TYPES = {
-    "fixed_expression": "workplace_expression",
-    "discourse_marker": "transition",
-    "hedge_softener": "softener",
+    "fixed_expression": "collocation",
+    "hedge_softener": "hedge",
+    "softener": "hedge",
+    "workplace_expression": "colloquial",
+    "sentence_frame": "colloquial",
+    "stance": "attitude",
+    "buying_time": "filler",
 }
+_DEFAULT_CHUNK_TYPE = {"conversation": "colloquial", "presentation": "intro_point"}
+_SPOKEN_FEATURE_LIMIT = 2
+_TRANSFER_SCENES = ("daily", "presentation", "academic")
+
+
+def _clean_choice(value, allowed, default: str) -> str:
+    value = _clean_text(value).lower()
+    return value if value in allowed else default
+
+
+def _clean_examples(items, limit: int) -> list[dict]:
+    examples = []
+    for example in items or []:
+        if isinstance(example, dict):
+            en, cn = _clean_text(example.get("en")), _clean_text(example.get("cn"))
+        else:
+            en, cn = _clean_text(example), ""
+        if en:
+            examples.append({"en": en, "cn": cn})
+    return examples[:limit]
+
+
+def _clean_string_list(items, limit: int) -> list[str]:
+    cleaned = (_clean_text(x) for x in (items or []) if isinstance(x, str))
+    return [item for item in cleaned if item][:limit]
+
+
+def _clean_chunk_fields(item: dict, text: str, *, allow_legacy: bool, scale: int = 1) -> dict:
+    """Shared field cleanup for AI-generated and user-edited chunks.
+
+    ``coach`` is derived from ``chunk_type`` when the type is known, so the
+    two always agree; an unknown type falls back to the coach's default type.
+    """
+    chunk_type = _clean_text(item.get("chunk_type")).lower()
+    keep_legacy = allow_legacy and chunk_type in LEGACY_CHUNK_TYPES
+    if not keep_legacy:
+        chunk_type = _LEGACY_CHUNK_TYPES.get(chunk_type, chunk_type)
+    if keep_legacy:
+        # 编辑过的旧版（v2）语块：保留原类型，没有教练归属就不硬塞一个
+        coach = _clean_choice(item.get("coach"), CHUNK_COACHES, "")
+    else:
+        coach = CHUNK_TYPE_COACH.get(chunk_type) or _clean_choice(
+            item.get("coach"), CHUNK_COACHES, "conversation")
+        if chunk_type not in CHUNK_TYPES:
+            chunk_type = _DEFAULT_CHUNK_TYPE[coach]
+    default_register = {"conversation": "daily", "presentation": "presentation"}.get(coach, "")
+    return {
+        "text": text,
+        "coach": coach,
+        "chunk_type": chunk_type,
+        "base_form": _clean_text(item.get("base_form")) or (text if not allow_legacy else ""),
+        "meaning_cn": _clean_text(item.get("meaning_cn")),
+        "nuance": _clean_text(item.get("nuance")),
+        "position_tone": _clean_text(item.get("position_tone")) if coach == "conversation" else "",
+        "register": _clean_choice(item.get("register"), CHUNK_REGISTERS, default_register),
+        "scenarios": _clean_text(item.get("scenarios")),
+        "caution": _clean_text(item.get("caution")),
+        "collocations": _clean_string_list(item.get("collocations"), _CHUNK_COLLOCATION_LIMIT * scale),
+        "examples": _clean_examples(item.get("examples"), _CHUNK_EXAMPLE_LIMIT * scale),
+    }
+
+
+def _clean_spoken_features(items, sentence: str | None) -> list[dict]:
+    """Spoken-English phenomena (ellipsis, repetition...). AI output must quote the sentence."""
+    features = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        text = _clean_text(item.get("text"))
+        if sentence is not None:
+            text = _locate_chunk(sentence, text)
+        feature = _clean_text(item.get("feature"))
+        if not text or not feature:
+            continue
+        features.append({
+            "text": text,
+            "feature": feature,
+            "is_error": bool(item.get("is_error")),
+            "note": _clean_text(item.get("note")),
+        })
+    return features[:_SPOKEN_FEATURE_LIMIT]
+
+
+def _clean_transfer(raw) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    transfer = {"intent_cn": _clean_text(raw.get("intent_cn"))}
+    for scene in _TRANSFER_SCENES:
+        item = raw.get(scene)
+        item = item if isinstance(item, dict) else {"en": item if isinstance(item, str) else ""}
+        transfer[scene] = {"en": _clean_text(item.get("en")), "cn": _clean_text(item.get("cn"))}
+    transfer["note"] = _clean_text(raw.get("note"))
+    return transfer
+
+
+def _clean_sentence_fields(raw: dict, chunks: list[dict], sentence: str | None) -> dict:
+    cefr = _clean_text(raw.get("cefr_level")).upper()
+    return {
+        "text_style": _clean_choice(raw.get("text_style"), TEXT_STYLES, "unclear"),
+        "sentence_gist": _clean_text(raw.get("sentence_gist")),
+        "cefr_level": cefr if cefr in _CEFR_LEVELS else "B1",
+        "chunks": chunks,
+        "spoken_features": _clean_spoken_features(raw.get("spoken_features"), sentence),
+        "template": _clean_text(raw.get("template")),
+        "template_example": _clean_text(raw.get("template_example")),
+        "transfer": _clean_transfer(raw.get("transfer")),
+    }
 
 
 def _normalize_chunk_analysis(raw: dict, sentence: str) -> dict:
@@ -734,44 +850,18 @@ def _normalize_chunk_analysis(raw: dict, sentence: str) -> dict:
         text = _locate_chunk(sentence, _clean_text(item.get("text")))
         if not text or any(chunk["text"] == text for chunk in chunks):
             continue
-        chunk_type = _clean_text(item.get("chunk_type")).lower()
-        chunk_type = _LEGACY_CHUNK_TYPES.get(chunk_type, chunk_type)
-        examples = []
-        for example in item.get("examples") or []:
-            if isinstance(example, dict):
-                en, cn = _clean_text(example.get("en")), _clean_text(example.get("cn"))
-            else:
-                en, cn = _clean_text(example), ""
-            if en:
-                examples.append({"en": en, "cn": cn})
-        chunks.append({
-            "text": text,
-            "base_form": _clean_text(item.get("base_form")) or text,
-            "chunk_type": chunk_type if chunk_type in CHUNK_TYPES else "workplace_expression",
-            "meaning_cn": _clean_text(item.get("meaning_cn")),
-            "nuance": _clean_text(item.get("nuance")),
-            "collocations": [
-                c for c in (_clean_text(x) for x in (item.get("collocations") or []) if isinstance(x, str)) if c
-            ][:_CHUNK_COLLOCATION_LIMIT],
-            "scenarios": _clean_text(item.get("scenarios")),
-            "examples": examples[:_CHUNK_EXAMPLE_LIMIT],
-        })
+        chunks.append(_clean_chunk_fields(item, text, allow_legacy=False))
         if len(chunks) >= _CHUNK_LIMIT:
             break
     if not chunks and raw_chunks:
         raise ValueError("AI 未返回与原句匹配的语块，请重试")
     chunks.sort(key=lambda chunk: sentence.find(chunk["text"]))
-    cefr = _clean_text(raw.get("cefr_level")).upper()
     no_chunk_reason = _clean_text(raw.get("no_chunk_reason")) if not chunks else ""
     if not chunks and not no_chunk_reason:
-        no_chunk_reason = "这句主要是专业内容或一次性表达，没有值得重点学习的职场口语语块。"
+        no_chunk_reason = "这句主要是专业内容或一次性表达，没有值得重点学习的口语或讲解语块。"
     return {
         "schema": CHUNK_ANALYSIS_SCHEMA,
-        "sentence_gist": _clean_text(raw.get("sentence_gist")),
-        "cefr_level": cefr if cefr in _CEFR_LEVELS else "B1",
-        "chunks": chunks,
-        "template": _clean_text(raw.get("template")),
-        "template_example": _clean_text(raw.get("template_example")),
+        **_clean_sentence_fields(raw, chunks, sentence),
         "no_chunk_reason": no_chunk_reason,
     }
 
@@ -802,10 +892,10 @@ async def oral_analysis(request: Request):
         cached_pattern = db.get_v2_sentence_pattern(sentence_id)
         cached_analysis = (cached_pattern or {}).get("analysis") or {}
         # 旧版句式分析（无 schema）视为未缓存，点击时重新生成语块分析
-        if cached_analysis.get("schema") == CHUNK_ANALYSIS_SCHEMA:
+        if cached_analysis.get("schema") in CHUNK_ANALYSIS_COMPATIBLE_SCHEMAS:
             return {**cached_analysis, "cached": True, "sentence_id": sentence_id}
     completion_kwargs = _json_completion_kwargs(
-        CHUNK_ANALYSIS_PROMPT.format(english=english), temperature=0.3, max_tokens=3000,
+        CHUNK_ANALYSIS_PROMPT.format(english=english), temperature=0.3, max_tokens=4500,
     )
     try:
         resp = await run_in_threadpool(ai_config.client.chat.completions.create, **completion_kwargs)
@@ -822,37 +912,18 @@ def _clean_edited_chunk_analysis(raw: dict) -> dict:
     """Light validation for a user-edited chunk analysis.
 
     Unlike AI output, edited chunks are not required to match the sentence
-    verbatim: the learner may deliberately rephrase a chunk.
+    verbatim: the learner may deliberately rephrase a chunk.  The schema
+    version is kept, so an edited v2 analysis stays v2 and keeps its types.
     """
     chunks = []
     for item in raw.get("chunks") or []:
         if not isinstance(item, dict) or not _clean_text(item.get("text")):
             continue
-        chunk_type = _clean_text(item.get("chunk_type")).lower()
-        examples = []
-        for example in item.get("examples") or []:
-            if isinstance(example, dict) and _clean_text(example.get("en")):
-                examples.append({"en": _clean_text(example.get("en")), "cn": _clean_text(example.get("cn"))})
-        chunks.append({
-            "text": _clean_text(item.get("text")),
-            "base_form": _clean_text(item.get("base_form")),
-            "chunk_type": chunk_type if chunk_type in CHUNK_TYPES else "workplace_expression",
-            "meaning_cn": _clean_text(item.get("meaning_cn")),
-            "nuance": _clean_text(item.get("nuance")),
-            "collocations": [
-                c for c in (_clean_text(x) for x in (item.get("collocations") or []) if isinstance(x, str)) if c
-            ][:_CHUNK_COLLOCATION_LIMIT * 2],
-            "scenarios": _clean_text(item.get("scenarios")),
-            "examples": examples[:_CHUNK_EXAMPLE_LIMIT * 2],
-        })
-    cefr = _clean_text(raw.get("cefr_level")).upper()
+        chunks.append(_clean_chunk_fields(item, _clean_text(item.get("text")), allow_legacy=True, scale=2))
+    schema = raw.get("schema")
     return {
-        "schema": CHUNK_ANALYSIS_SCHEMA,
-        "sentence_gist": _clean_text(raw.get("sentence_gist")),
-        "cefr_level": cefr if cefr in _CEFR_LEVELS else "B1",
-        "chunks": chunks[:_CHUNK_LIMIT * 2],
-        "template": _clean_text(raw.get("template")),
-        "template_example": _clean_text(raw.get("template_example")),
+        "schema": schema if schema in CHUNK_ANALYSIS_COMPATIBLE_SCHEMAS else CHUNK_ANALYSIS_SCHEMA,
+        **_clean_sentence_fields(raw, chunks[:_CHUNK_LIMIT * 2], None),
         "no_chunk_reason": _clean_text(raw.get("no_chunk_reason")) if not chunks else "",
         "edited": True,
     }

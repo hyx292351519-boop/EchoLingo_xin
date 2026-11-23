@@ -371,88 +371,161 @@ PRACTICE_EXAMPLE_PROMPT = """
 """
 
 # ── 语块分析按需生成（/api/oral-analysis 路由）──────────────────
-# 输出结构版本号；路由据此判断缓存是否为旧版句式分析，前端据此选择渲染方式。
-CHUNK_ANALYSIS_SCHEMA = "chunks_v2"
-# 语块类型，对应学习者关心的四类：职场高频表达、固定搭配、惯用框架、语用功能块
-CHUNK_TYPES = (
-    "workplace_expression",  # 高频口语 / 职场表达
-    "collocation",           # 固定搭配
-    "sentence_frame",        # 惯用框架
-    "phrasal_verb",          # 短语动词
-    "softener",              # 语用：委婉、缓和
-    "transition",            # 语用：转折、衔接
-    "stance",                # 语用：表态、给出立场
-    "buying_time",           # 语用：争取时间、组织思路
+# 输出结构版本号；路由据此判断缓存版本，前端据此选择渲染方式。
+# chunks_v3：双教练（口语 Conversation Coach + 讲解 Presentation Coach）。
+CHUNK_ANALYSIS_SCHEMA = "chunks_v3"
+# 旧版本仍可展示与编辑（v2 = 职场口语语块），点"重新解析"才会升级为 v3
+CHUNK_ANALYSIS_COMPATIBLE_SCHEMAS = ("chunks_v2", "chunks_v3")
+
+# 两位教练
+CHUNK_COACHES = ("conversation", "presentation")
+
+# 语块类型 → 所属教练。AI 输出只能用这里的类型。
+CHUNK_TYPE_COACH = {
+    # A. Conversation Coach：母语者真实口语
+    "discourse_marker": "conversation",  # 话语标记：well, actually, I mean, you know, so, right
+    "filler": "conversation",            # 填充词：思考、停顿、组织语言
+    "hedge": "conversation",             # 弱化表达：kind of, sort of, pretty much
+    "colloquial": "conversation",        # 口语化习惯表达
+    "attitude": "conversation",          # 语气、情绪与说话人态度
+    "collocation": "conversation",       # 自然的固定搭配 / 语言块
+    "phrasal_verb": "conversation",      # 短语动词
+    # B. Presentation Coach：专业讲解与演讲
+    "intro_topic": "presentation",       # 介绍主题
+    "intro_point": "presentation",       # 引出观点
+    "explain_concept": "presentation",   # 解释概念
+    "explain_mechanism": "presentation", # 解释原理 / 机制
+    "explain_reason": "presentation",    # 解释原因
+    "give_example": "presentation",      # 举例说明
+    "compare": "presentation",           # 比较
+    "describe_data": "presentation",     # 讲解图表与数据
+    "emphasize": "presentation",         # 强调重点
+    "implication": "presentation",       # 说明意义 / 启示
+    "transition": "presentation",        # 衔接过渡
+    "summarize": "presentation",         # 总结
+}
+CHUNK_TYPES = tuple(CHUNK_TYPE_COACH)
+# 旧版（v2）类型：仍允许出现在已保存 / 用户编辑过的分析中
+LEGACY_CHUNK_TYPES = (
+    "workplace_expression", "sentence_frame", "softener", "stance", "buying_time",
 )
+# 适用场合
+CHUNK_REGISTERS = ("daily", "presentation", "academic", "any")
+# 原文语体：决定能否当作"母语者真实口语"来学
+TEXT_STYLES = ("spoken_natural", "scripted_speech", "written_formal", "textbook", "unclear")
 
 CHUNK_ANALYSIS_PROMPT = """\
-你是一名职场英语口语教练，服务对象是以中文为母语、需要在工作沟通和会议中用英语发言的学习者。
-你的任务：从原句中挑出最值得学的语块，让学习者能直接拿到自己的会议发言、汇报、讨论和邮件沟通里去用。
+你同时扮演两位英语教练，服务对象是以中文为母语、已有一定语法和基础词汇、但词汇量和自然表达能力仍不足的学习者。
+学习者的目标不是背下这句话，而是从真实材料中逐步积累一套能自由调用的英语表达体系。
+
+- Conversation Coach（口语教练）：从原句中找出英语母语者真实交流里会用的口语表达——话语标记、填充词、弱化表达、口语化习惯说法、自然搭配，以及它们传达的语气和态度，让学习者的日常英语更生动自然。
+- Presentation Coach（讲解教练）：从原句中找出适合专业讲解、课堂展示、学术汇报和 PPT 演讲的表达语块——介绍主题、引出观点、解释概念与原理、说明原因、举例、比较、讲解数据、强调、说明意义、衔接和总结。
 
 英文原句：{english}
 
-## 第一步：挑选语块（宁缺毋滥）
-从原句中挑出 0–5 个语块，按在原句中出现的顺序排列。只挑真正能迁移到职场口语中的表达，宁可少挑，也不要凑数。
+## 第一步：判断原文语体（text_style）
+先判断这句话更像哪种材料，后面的分析要据此调整：
+- spoken_natural：自然的即兴口语（访谈、闲聊、播客、vlog）
+- scripted_speech：有准备的讲话（演讲、讲座、课程讲解、新闻播报）
+- written_formal：正式书面语（论文、报告、新闻稿、说明文）
+- textbook：教材或刻意编写的示范句
+- unclear：只凭一句话无法判断
+如果不是 spoken_natural，不要把其中的表达说成"母语者日常口语习惯"；书面或学术句子主要交给 Presentation Coach 分析。
 
-优先选择：
-1. 高频口语 / 职场表达：开会、汇报、协作、对齐进度时母语者常说的话，如 "circle back"、"on the same page"、"walk you through"
-2. 固定搭配（collocations）：如 "raise a concern"、"make a decision"、"meet the deadline"
-3. 惯用框架：可以套用的半固定句式，如 "as far as I ___"、"it turns out that ..."、"the thing is, ..."、"what I'm trying to say is ..."
-4. 语用功能块：在对话里承担功能的表达
-   - 委婉、缓和：如 "I'm not sure, but ..."、"I might be wrong, but ..."
-   - 转折、衔接：如 "that said"、"on the other hand"、"having said that"
-   - 表态、给出立场：如 "I'd argue that ..."、"I'm with you on that"
-   - 争取时间、组织思路：如 "let me think about that for a second"、"that's a good question"
+## 第二步：两位教练挑选语块（宁缺毋滥）
+从原句中挑出 0–5 个最值得学的语块，按在原句中出现的顺序排列。两位教练都可以没有收获，不要为了凑数或为了平衡两类而强行挑选。
 
-不要选：
-- 纯专业术语、行业名词、产品名、人名地名（如 "machine learning pipeline"、"quarterly EBITDA"）
-- 生僻词、书面腔或文学化的表达
+Conversation Coach 优先挑：
+- 话语标记和填充词，如 well, actually, I mean, you know, so, right, basically, like, literally
+- 弱化表达，如 kind of, sort of, pretty much, a little, I guess
+- 口语化习惯表达和自然的固定搭配，如 "end up doing"、"make sense"、"figure out"
+- 表达语气、情绪或态度的说法
+讲解这类词时，必须说明它在这句里实际发挥的作用，而不是字典义。例如 "Like, I didn't really expect that." 里的 like 不是"喜欢"，而是句首话语标记：给说话人一点缓冲、带出接下来的感受，让语气更随意。
+
+Presentation Coach 优先挑能反复调用的讲解框架，例如：
+"The key idea behind this approach is ..."、"What this means in practice is ..."、"The reason why this happens is ..."、
+"To put it simply, ..."、"This brings us to the next question."、"What's particularly interesting here is ..."
+重点是能套用的自然表达，不是复杂的学术词汇。
+
+两位教练都不要选：
+- 纯专业术语、行业名词、产品名、人名地名
+- 生僻词、文学化或过于书面的冷门表达
 - 只在这个语境里成立、换个场合就用不上的一次性说法
 - 学习者一看就懂的基础词，以及 the、is、very 这类普通功能词
 - 不要逐词拆分，也不要把整句切成碎片
 
-如果整句都是专业内容或一次性表达，没有符合标准的语块，chunks 返回空数组，并在 no_chunk_reason 里用一句中文说明原因。
+如果整句没有符合标准的语块，chunks 返回空数组，并在 no_chunk_reason 里用一句中文说明原因。
 
-## 第二步：逐个讲解
-对每个语块：
+## 第三步：逐个讲解
+每个语块：
 1. text：从原句逐字照抄这个语块的连续片段，大小写、标点和词形都不能改。如果表达中间夹了别的词（如 take all of this into account），就把整段连同中间的词一起照抄。
-2. base_form：写出能迁移到其他句子的通用形式，用 sb / sth / doing / ___ 表示可以替换的部分。
-3. chunk_type：只能从下面选一个：
-   workplace_expression（职场表达）、collocation（固定搭配）、sentence_frame（惯用框架）、phrasal_verb（短语动词）、
-   softener（委婉缓和）、transition（转折衔接）、stance（表态）、buying_time（争取时间）
-4. meaning_cn：写出它在本句中的自然中文意思，要像中文母语者平时会说的话，不要逐词硬译。
-5. nuance：用 1–2 句话说明母语者为什么用它：传达了什么态度或意图，有什么潜台词，和更直白的说法相比差在哪里，在同事或上级面前听起来是什么感觉。这一项最重要，不能写成"表示……的意思"这种词典式解释。
-6. collocations：给出 2–4 个职场中高频、真实的搭配或变体，用英文短语写。
-7. scenarios：用一句中文说明在会议或工作沟通中什么时候用它，比如汇报进度、提出异议、回应提问、推进讨论、拒绝请求。
-8. examples：给出 2 个职场或会议场景中的自然口语例句，两个例句的场景要不同（如一个是周会汇报，一个是和同事讨论方案），不要照搬原句话题。例句要像会上真的会说出口的话，并附中文翻译。
+2. coach：conversation 或 presentation，表示由哪位教练讲解。
+3. chunk_type：必须和 coach 对应，只能从下面选一个：
+   - conversation：discourse_marker（话语标记）、filler（填充词）、hedge（弱化表达）、colloquial（口语习惯表达）、attitude（语气态度）、collocation（固定搭配）、phrasal_verb（短语动词）
+   - presentation：intro_topic（介绍主题）、intro_point（引出观点）、explain_concept（解释概念）、explain_mechanism（解释原理）、explain_reason（解释原因）、give_example（举例）、compare（比较）、describe_data（讲解数据）、emphasize（强调重点）、implication（说明意义）、transition（衔接过渡）、summarize（总结）
+4. base_form：可直接模仿的通用句型，用 sb / sth / doing / ... 标出可替换部分。
+5. meaning_cn：它在本句语境中的实际意思，要像中文母语者平时会说的话，不要逐词硬译。
+6. nuance：这一项最重要，用 1–2 句话说明它在这里发挥什么作用、说话人为什么这样说、和更直白的说法相比差在哪里。conversation 讲它的口语功能和语气效果；presentation 讲它在讲解中起什么组织作用。不能写成"表示……的意思"这种词典式解释。
+7. position_tone：仅 conversation 填写，说明它通常放在句首、句中还是句尾，以及会带来什么语气（如更随意、更委婉、更犹豫）；presentation 填空字符串。
+8. register：适用场合，只能是 daily（日常交流）、presentation（课堂展示 / 一般讲解）、academic（正式学术汇报）、any（都可以）之一。
+9. scenarios：用一句中文说明母语者通常在什么场景下用它，或它适合讲解的哪个环节（开场、解释原理、讲图表、转到下一页、收尾等）。
+10. caution：使用注意。像 like、you know、basically 这类词过度使用会显得不够严谨，正式汇报里要少用；也要说明口语里的省略、重复是自然现象还是不该模仿的错误。没有需要提醒的就填空字符串。
+11. collocations：2–4 个真实、高频的搭配或变体，用英文短语写。
+12. examples：2 个自然例句，附中文翻译。conversation 的例句用生活化场景；presentation 的例句要换成两个不同主题（如一个讲科技、一个讲社会话题），都不要照搬原句话题。
 
-## 第三步：整句
-- sentence_gist：用 1–2 句中文概括整句的意思，以及说话人的态度或意图。
+## 第四步：整句
+- sentence_gist：用 1–2 句中文概括整句意思，以及说话人的语气或意图。
 - cefr_level：整句表达的 CEFR 难度，只能是 A2、B1、B2、C1、C2 之一。
-- template：给出整句可复用的骨架，用 [...] 标出可替换的部分；整句没有复用价值时填空字符串。
-- template_example：用这个骨架造一句会议或工作场景中能说的话；template 为空时也填空字符串。
+- spoken_features：如果原句里有省略、重复、不完整句、语序变化等真实口语现象，列出 0–2 条：
+  {{"text": 原句片段（逐字照抄）, "feature": 现象名称（中文）, "is_error": 是否属于不该模仿的语法错误, "note": 一句中文说明}}；没有就返回空数组。
+- template：整句可复用的骨架，用 [...] 标出可替换部分；整句没有复用价值时填空字符串。
+- template_example：用这个骨架造一句新话；template 为空时也填空字符串。
+- transfer：表达迁移。提炼这句话的表达意图（intent_cn），再分别写出在三个场景下自然的说法：
+  daily（日常交流）、presentation（一般讲解 / 课堂展示）、academic（正式学术汇报），每项是 {{"en": "", "cn": ""}}。
+  不要为了制造区别而强行改写：某个场景下不适合这样表达，就把那一项留空，并在 note 里说明原因；三项都写了就把 note 留空。
+  整句没有迁移价值时，intent_cn 和三项都留空，note 说明原因。
 - no_chunk_reason：chunks 为空时说明原因，否则填空字符串。
+
+## 教学原则
+- 只分析原句里真实出现的表达，不要编造原句中没有的内容。
+- 区分母语者的真实口语习惯和正式学术英语，不要混为一谈。
+- 优先高频、实用、能迁移的表达，不追求生僻词和复杂句式。
+- 讲解用中文，英文表达和例句保留英文。
+- 不确定某种表达在母语者中是否常见时，在 nuance 或 caution 里明确说明，不要虚构使用习惯。
 
 ## 输出
 只输出合法 JSON，不要 markdown，也不要任何额外文字：
 {{
-  "schema": "chunks_v2",
+  "schema": "chunks_v3",
+  "text_style": "spoken_natural",
   "sentence_gist": "",
   "cefr_level": "B1",
   "chunks": [
     {{
       "text": "",
-      "base_form": "",
+      "coach": "conversation",
       "chunk_type": "",
+      "base_form": "",
       "meaning_cn": "",
       "nuance": "",
-      "collocations": [""],
+      "position_tone": "",
+      "register": "daily",
       "scenarios": "",
+      "caution": "",
+      "collocations": [""],
       "examples": [{{"en": "", "cn": ""}}]
     }}
   ],
+  "spoken_features": [],
   "template": "",
   "template_example": "",
+  "transfer": {{
+    "intent_cn": "",
+    "daily": {{"en": "", "cn": ""}},
+    "presentation": {{"en": "", "cn": ""}},
+    "academic": {{"en": "", "cn": ""}},
+    "note": ""
+  }},
   "no_chunk_reason": ""
 }}
 """

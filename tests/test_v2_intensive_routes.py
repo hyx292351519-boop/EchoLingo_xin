@@ -189,7 +189,7 @@ def test_oral_analysis_is_persisted_and_reused_by_intensive_and_sentence_library
     assert second.json()["cached"] is True
     assert len(calls) == 1
     stored = db.get_v2_sentence_pattern(saved["sentence_id"])
-    assert stored["analysis"]["schema"] == "chunks_v2"
+    assert stored["analysis"]["schema"] == "chunks_v3"
     assert stored["analysis"]["chunks"][0]["base_form"] == "take sth into account"
     assert stored["pattern_template"] == analysis["template"]
     intensive = client.get(f"/api/v2/lessons/{lesson['id']}/intensive").json()
@@ -253,15 +253,113 @@ def test_chunk_analysis_aligns_chunks_to_original_sentence(monkeypatch):
     monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, calls))
     data = TestClient(create_app()).post("/api/oral-analysis", json={"english": sentence}).json()
 
-    assert data["schema"] == "chunks_v2"
+    assert data["schema"] == "chunks_v3"
     assert data["cefr_level"] == "B2"
     assert [chunk["text"] for chunk in data["chunks"]] == ["To be honest", "I\u2019ve been meaning to"]
-    assert data["chunks"][0]["chunk_type"] == "workplace_expression"
+    assert data["chunks"][0]["chunk_type"] == "colloquial"
+    assert data["chunks"][0]["coach"] == "conversation"
     assert data["chunks"][0]["base_form"] == "To be honest"
     assert len(data["chunks"][1]["examples"]) == 2
     assert len(data["chunks"][1]["collocations"]) == 4
-    assert "职场" in calls[0]["messages"][0]["content"]
+    prompt = calls[0]["messages"][0]["content"]
+    assert "Conversation Coach" in prompt and "Presentation Coach" in prompt
     assert sentence in calls[0]["messages"][0]["content"]
+
+
+def test_chunk_analysis_v3_normalizes_dual_coach_fields(monkeypatch):
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    sentence = "So, basically, the key idea behind this approach is, uh, pretty simple."
+    payload = {
+        "text_style": "SPOKEN_NATURAL",
+        "chunks": [
+            {"text": "So, basically", "coach": "conversation", "chunk_type": "discourse_marker",
+             "position_tone": "句首，语气随意", "register": "daily",
+             "caution": "正式汇报里少用 basically。"},
+            # coach 与类型矛盾：以类型为准；presentation 不保留 position_tone；未知 register 用默认
+            {"text": "the key idea behind this approach is", "coach": "conversation",
+             "chunk_type": "explain_concept", "position_tone": "句首", "register": "weird"},
+            {"text": "pretty simple", "chunk_type": "hedge"},
+        ],
+        "spoken_features": [
+            {"text": "uh", "feature": "填充停顿", "is_error": False, "note": "思考时的自然停顿"},
+            {"text": "not in sentence", "feature": "编造", "note": "应被丢弃"},
+        ],
+        "transfer": {
+            "intent_cn": "点出方法的核心思路",
+            "daily": {"en": "Basically, it's pretty simple.", "cn": "说白了挺简单的。"},
+            "presentation": {"en": "The key idea here is quite simple.", "cn": "这里的核心思路很简单。"},
+            "academic": "The underlying principle is straightforward.",
+            "note": "",
+        },
+    }
+    calls = []
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, calls))
+    data = TestClient(create_app()).post("/api/oral-analysis", json={"english": sentence}).json()
+
+    assert data["schema"] == "chunks_v3"
+    assert data["text_style"] == "spoken_natural"
+    marker, frame, hedge = data["chunks"]
+    assert (marker["coach"], marker["register"], marker["position_tone"]) == ("conversation", "daily", "句首，语气随意")
+    assert marker["caution"] == "正式汇报里少用 basically。"
+    assert (frame["coach"], frame["chunk_type"]) == ("presentation", "explain_concept")
+    assert frame["position_tone"] == "" and frame["register"] == "presentation"
+    assert (hedge["coach"], hedge["register"]) == ("conversation", "daily")
+    assert [item["text"] for item in data["spoken_features"]] == ["uh"]
+    assert data["transfer"]["academic"] == {"en": "The underlying principle is straightforward.", "cn": ""}
+    assert data["transfer"]["intent_cn"] == "点出方法的核心思路"
+    assert calls[0]["max_tokens"] >= 4000
+
+
+def test_chunk_analysis_defaults_missing_v3_fields(monkeypatch):
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    payload = {"text_style": "poetry", "chunks": [{"text": "figure out", "coach": "presentation"}]}
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, []))
+    data = TestClient(create_app()).post(
+        "/api/oral-analysis", json={"english": "We need to figure out the cause."}).json()
+    assert data["text_style"] == "unclear"
+    assert data["spoken_features"] == []
+    assert data["transfer"]["daily"] == {"en": "", "cn": ""}
+    # 未知类型按 coach 落到该教练的默认类型
+    assert (data["chunks"][0]["coach"], data["chunks"][0]["chunk_type"]) == ("presentation", "intro_point")
+
+
+def test_chunks_v2_cache_is_still_served_without_regenerating(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+    from webapp.fastapi_routes import ai
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    sentence = db.upsert_v2_sentence("That said, we can ship it.")
+    db.save_v2_sentence_analysis(sentence["id"], {
+        "schema": "chunks_v2",
+        "chunks": [{"text": "That said", "chunk_type": "transition"}],
+        "edited": True,
+    })
+    calls = []
+    monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client({"chunks": []}, calls))
+    data = TestClient(create_app()).post("/api/oral-analysis", json={"sentence_id": sentence["id"]}).json()
+    assert data["cached"] is True and data["schema"] == "chunks_v2"
+    assert calls == []
+
+
+def test_editing_a_v2_analysis_keeps_schema_and_legacy_types(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab.db")
+    edited = {
+        "schema": "chunks_v2",
+        "chunks": [{"text": "let me think", "chunk_type": "buying_time", "nuance": "争取时间"}],
+    }
+    body = TestClient(create_app()).post(
+        "/api/oral-analysis/save", json={"english": "Hmm, let me think.", "analysis": edited}).json()
+    assert body["schema"] == "chunks_v2"
+    assert body["chunks"][0]["chunk_type"] == "buying_time"
+    assert body["chunks"][0]["coach"] == ""
 
 
 def test_chunk_analysis_rejects_response_without_matching_chunks(monkeypatch):
@@ -348,7 +446,7 @@ def test_chunk_analysis_maps_legacy_chunk_types_and_requires_chunks_field(monkey
     monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, []))
     client = TestClient(create_app())
     data = client.post("/api/oral-analysis", json={"english": sentence}).json()
-    assert [chunk["chunk_type"] for chunk in data["chunks"]] == ["transition", "softener"]
+    assert [chunk["chunk_type"] for chunk in data["chunks"]] == ["discourse_marker", "hedge"]
     assert data["no_chunk_reason"] == ""
 
     monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client({"sentence_gist": "x"}, []))
@@ -373,7 +471,7 @@ def test_v1_chunk_cache_is_regenerated_with_current_prompt(tmp_path, monkeypatch
     monkeypatch.setattr(ai.ai_config, "client", _fake_ai_client(payload, calls))
     data = TestClient(create_app()).post("/api/oral-analysis", json={"sentence_id": sentence["id"]}).json()
     assert data["cached"] is False
-    assert data["schema"] == "chunks_v2"
+    assert data["schema"] == "chunks_v3"
     assert len(calls) == 1
 
 
@@ -397,7 +495,7 @@ def test_legacy_sentence_analysis_cache_is_regenerated_as_chunks(tmp_path, monke
     first = client.post("/api/oral-analysis", json={"sentence_id": sentence["id"]}).json()
     second = client.post("/api/oral-analysis", json={"sentence_id": sentence["id"]}).json()
 
-    assert first["cached"] is False and first["schema"] == "chunks_v2"
+    assert first["cached"] is False and first["schema"] == "chunks_v3"
     assert second["cached"] is True
     assert len(calls) == 1
     # 新结果没有 template 时，保留原有句式骨架供练习使用
@@ -989,7 +1087,7 @@ def test_chunk_analysis_of_unsaved_sentence_survives_reload_and_can_be_edited(tm
     assert body["edited"] is True
     assert [c["text"] for c in body["chunks"]] == ["It turns out that", "need more time"]
     assert body["chunks"][0]["nuance"] == "我自己的理解"
-    assert body["chunks"][1]["chunk_type"] == "workplace_expression"
+    assert body["chunks"][1]["chunk_type"] == "colloquial"
     assert db.get_v2_sentence_pattern(reloaded["sentence_id"])["pattern_template"] == "It turns out that [new fact]."
 
     again = client.get(f"/api/v2/lessons/{lesson['id']}/intensive").json()["sentences"][0]

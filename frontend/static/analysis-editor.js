@@ -15,7 +15,8 @@
   'use strict';
 
   const TOP_LEVEL_KEYS = {
-    chunk: ['sentence_gist', 'cefr_level', 'chunks', 'template', 'template_example', 'no_chunk_reason'],
+    chunk: ['text_style', 'sentence_gist', 'cefr_level', 'chunks', 'spoken_features', 'template',
+      'template_example', 'transfer', 'no_chunk_reason'],
     word: ['basic_meaning', 'contextual_meaning', 'recognition', 'concept', 'collocation_groups',
       'sentence_building', 'similar_words', 'exercises'],
   };
@@ -25,6 +26,9 @@
     template_example: '骨架示例', no_chunk_reason: '没有语块的原因', text: '原文', base_form: '通用形式',
     chunk_type: '类型', meaning_cn: '中文意思', nuance: '语感', collocations: '常见搭配（每行一条）',
     scenarios: '使用场景', examples: '例句', en: '英文', cn: '中文',
+    text_style: '原文语体', coach: '教练', position_tone: '位置与语气', register: '适用场合',
+    caution: '使用注意', spoken_features: '口语现象', feature: '现象', is_error: '属于语法错误（不要模仿）',
+    transfer: '表达迁移', intent_cn: '表达意图', presentation: '一般讲解', academic: '学术汇报',
     basic_meaning: '基本义', contextual_meaning: '在本句中', recognition: '单词识别', morphology: '词根词缀',
     splittable: '可以拆分', parts: '组成部分', part: '部分', type: '类型', meaning: '含义',
     explanation: '说明', etymology: '词源', pronunciation: '发音', ipa_us: '美式音标', ipa_uk: '英式音标',
@@ -41,13 +45,17 @@
     answer: '参考答案',
   };
 
+  // Chunk option lists live in chunk-analysis.js (load it before this file)
+  function chunkOptions(name) {
+    return (global.ChunkAnalysis && global.ChunkAnalysis[name]) || null;
+  }
+
   // Enumerated fields: "<parent list key>.<field>" first, then "<field>"
   const ENUMS = {
-    'chunks.chunk_type': [
-      ['workplace_expression', '职场表达'], ['collocation', '固定搭配'], ['sentence_frame', '惯用框架'],
-      ['phrasal_verb', '短语动词'], ['softener', '委婉缓和'], ['transition', '转折衔接'],
-      ['stance', '表态'], ['buying_time', '争取时间'],
-    ],
+    'chunks.chunk_type': chunkOptions('TYPE_OPTIONS'),
+    'chunks.coach': chunkOptions('COACH_OPTIONS'),
+    'chunks.register': chunkOptions('REGISTER_OPTIONS'),
+    text_style: chunkOptions('TEXT_STYLE_OPTIONS'),
     cefr_level: [['A2', 'A2'], ['B1', 'B1'], ['B2', 'B2'], ['C1', 'C1'], ['C2', 'C2']],
     'parts.type': [['prefix', '前缀'], ['root', '词根'], ['suffix', '后缀'], ['word', '组成词']],
     'collocation_groups.category': [
