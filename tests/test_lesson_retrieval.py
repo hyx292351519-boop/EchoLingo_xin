@@ -615,3 +615,49 @@ def test_reading_selection_block_fallback_without_sentence_keys(tmp_path, monkey
     anchor = result["citations"][0]
     assert anchor["anchor_type"] == "block"
     assert anchor["block_index"] == 1
+
+
+# ---------- 音视频课的选区（听力 / 字幕阅读模式的「AI 解析」）----------
+
+def test_media_selection_reaches_ai_and_scopes_to_matching_window(tmp_path, monkeypatch):
+    import db
+    lesson = _setup_lesson(db, monkeypatch, tmp_path, segs=_segments(150, words=8))
+    prompts = []
+
+    def call_ai(kind, content):
+        prompts.append((kind, content))
+        if kind == "answer":
+            return json.dumps({"answer": "解析。", "coverage": "full", "citations": []})
+        return json.dumps({"chapters": [0]})
+
+    # 跨两个字幕句的选区（相邻句在窗口重叠处总能被同一窗口覆盖）
+    selected = "w6  W7 sentence number 76"
+    lr.answer_lesson_question(
+        call_ai, lesson=lesson, question="请解析选中的英文", selected_text=selected)
+
+    answer_prompt = next(c for k, c in prompts if k == "answer")
+    assert "（用户选中原文：w6 W7 sentence number 76）" in answer_prompt
+    # 收窄到命中窗口 ±1：开头和结尾的字幕不在候选里，也不走章节路由
+    assert "sentence number 1 " not in answer_prompt
+    assert "sentence number 150 " not in answer_prompt
+    assert all(k != "route" for k, _ in prompts)
+
+
+def test_media_selection_without_match_falls_back_to_whole_lesson(tmp_path, monkeypatch):
+    import db
+    lesson = _setup_lesson(db, monkeypatch, tmp_path, segs=_segments(20, words=8))
+    prompts = []
+
+    def call_ai(kind, content):
+        prompts.append((kind, content))
+        if kind == "answer":
+            return json.dumps({"answer": "解析。", "coverage": "full", "citations": []})
+        return json.dumps({"chapters": [0]})
+
+    result = lr.answer_lesson_question(
+        call_ai, lesson=lesson, question="请解析选中的英文",
+        selected_text="a phrase the transcript never contains")
+
+    assert result["answer"] == "解析。"
+    answer_prompt = next(c for k, c in prompts if k == "answer")
+    assert "（用户选中原文：a phrase the transcript never contains）" in answer_prompt

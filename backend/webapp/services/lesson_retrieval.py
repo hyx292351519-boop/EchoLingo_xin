@@ -641,7 +641,13 @@ def answer_lesson_question(
         reading_blocks = db.get_v2_reading_blocks(lesson_id)
         candidates = build_reading_candidates(reading_blocks)
 
+    selected_text = " ".join((selected_text or "").split())
+    # 阅读课：选区在服务端 blocks/sentences 上解析；匹配不到直接 none
     selection_active = bool(selected_text and reading_blocks is not None)
+    # 音视频课（听力/字幕阅读模式也会发 reading_selection）：在字幕窗口上匹配，
+    # 命中则收窄到命中窗口 ± 1；跨窗口等匹配不到时退回全课检索，但选区照样进入问题
+    media_selection = bool(selected_text and is_media)
+    media_selection_scoped = False
     matched_sentence_ids: set[tuple[int, str]] | None = None
     exact_sentence_ids: set[tuple[int, str]] = set()
     if selection_active:
@@ -665,6 +671,15 @@ def answer_lesson_question(
                 if int(c.get("block_index", -1)) in matched_blocks
             ]
         candidates = _filter_candidates_with_context(candidates, hits) if hits else []
+    elif media_selection:
+        selected_norm = _norm_text(selected_text)
+        hits = [
+            pos for pos, c in enumerate(candidates)
+            if selected_norm in _norm_text(c.get("text", ""))
+        ]
+        if hits:
+            candidates = _filter_candidates_with_context(candidates, hits)
+            media_selection_scoped = True
     elif selected_segment_ids:
         wanted = {int(x) for x in selected_segment_ids}
         if candidates and candidates[0]["kind"] == "time":
@@ -691,10 +706,10 @@ def answer_lesson_question(
             "external_knowledge_used": False,
         }
 
-    scoped = bool(selection_active or selected_segment_ids)
+    scoped = bool(selection_active or selected_segment_ids or media_selection_scoped)
     effective_question = question
-    if selection_active:
-        # 选区原文随问题进入排序/回答，锚点仍只来自服务端 candidate map
+    if selected_text:
+        # 选区原文随问题进入路由/排序/回答（阅读课与音视频课一致），锚点仍只来自服务端 candidate map
         effective_question = f"{question}\n（用户选中原文：{_clip(selected_text, 500)}）"
 
     candidate_map = {c["id"]: c for c in candidates}
@@ -726,7 +741,7 @@ def answer_lesson_question(
                 ensure_ascii=False,
             ),
             history_text=_format_history(history) or "（无）",
-            question=question,
+            question=effective_question,
         )
         picked = parse_route(call_ai("route", route_prompt), chapters)
     else:
@@ -768,7 +783,7 @@ def answer_lesson_question(
         if remaining:
             rest = rank_candidates(effective_question, remaining, limit=ABSENCE_CANDIDATES)
             absence_prompt = LESSON_RAG_ABSENCE_PROMPT.format(
-                question=question,
+                question=effective_question,
                 candidates_text=_format_candidates(rest, chapter_titles),
             )
             try:
