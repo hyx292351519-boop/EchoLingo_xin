@@ -619,7 +619,7 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="back-link" href="/workspace/{{ lesson_id }}">← 返回课程</a>
+    <a class="back-link" id="back-to-lesson" href="/workspace/{{ lesson_id }}">← 返回课程</a>
     <div class="title-block">
       <div class="eyebrow">Phase B · 逐句精学</div>
       <h1 id="lesson-title">逐句精读</h1>
@@ -739,6 +739,25 @@
     let activeWordUtterance = null;
     let intensiveViewMode = 'list';
     let cardSentenceKey = Number.isFinite(targetSentenceKey) ? targetSentenceKey : null;
+    // 最近学习的句子（播放过 / 当前卡片）：「返回课程」回到它在视频或正文中的位置
+    let lastStudiedSentenceKey = cardSentenceKey;
+
+    function lessonReturnUrl() {
+      // 卡片模式以当前卡片为准；列表模式以最近播放的句子为准
+      const key = intensiveViewMode === 'card' && Number.isFinite(cardSentenceKey)
+        ? cardSentenceKey
+        : (Number.isFinite(lastStudiedSentenceKey) ? lastStudiedSentenceKey : cardSentenceKey);
+      const sentence = Number.isFinite(key) ? sentenceByKey(key) : null;
+      if (!sentence) return `/workspace/${LESSON_ID}`;
+      const params = new URLSearchParams({sentence_key: String(sentence.key)});
+      const start = Number(sentence.start_seconds);
+      if (Number.isFinite(start) && start > 0) params.set('t', String(start));
+      return `/workspace/${LESSON_ID}?${params}`;
+    }
+
+    document.getElementById('back-to-lesson')?.addEventListener('click', event => {
+      event.currentTarget.href = lessonReturnUrl();
+    });
     let intensiveYouTubePlayer = null;
     let intensiveYouTubeReady = false;
     let intensiveYouTubeApiLoading = false;
@@ -1496,6 +1515,7 @@
     async function playIntensiveSentence(key) {
       const sentence = sentenceByKey(key);
       if (!sentence) return;
+      lastStudiedSentenceKey = Number(key);
       stopIntensivePlayback();
       const rate = sentenceSpeed.get(Number(key)) || 1;
       const start = Number(sentence.start_seconds) || 0;

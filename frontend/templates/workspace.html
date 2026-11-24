@@ -242,6 +242,27 @@
       flex: 0 0 auto;
       padding: 10px;
     }
+    .media-progress {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .media-progress[hidden] { display: none; }
+    .media-progress input[type="range"] {
+      flex: 1 1 auto;
+      min-width: 0;
+      accent-color: var(--brand);
+      cursor: pointer;
+    }
+    .reading-sentence.return-target {
+      background: #fff3c4;
+      border-radius: 4px;
+      transition: background 1.2s ease;
+    }
     #youtube-player {
       aspect-ratio: 16 / 9;
       width: 100%;
@@ -1658,6 +1679,12 @@
     <section class="watch-column" aria-label="video and current subtitle">
       <div class="video-card">
         <div id="youtube-player"></div>
+        <div id="media-progress" class="media-progress" hidden>
+          <span id="media-progress-current">0:00</span>
+          <input id="media-progress-range" type="range" min="0" max="0" step="0.1" value="0"
+                 aria-label="播放进度，拖动跳转到任意位置">
+          <span id="media-progress-duration">0:00</span>
+        </div>
       </div>
 
       <div class="learning-controls" aria-label="playback and subtitle controls">
@@ -2260,11 +2287,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   initCitationDelegation();
   loadCachedDocumentOutline();
   await refreshLesson();
+  await prepareResumePosition();
   loadWorkspaceNotes();
   await loadChatSessions();
   if (activeStudyMode !== 'reading' || lessonData?.video_id) {
     initPlayer({allowReading: true});
   }
+  initMediaProgressBar();
+  initProgressSaving();
   if (activeStudyMode !== 'reading' || lessonData?.subtitle_status === 'pending') {
     startPolling();
   }
@@ -2351,6 +2381,7 @@ async function playReadingRange(startSeconds, endSeconds) {
   const end = Number(endSeconds);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
   stopReadingRange();
+  pendingResumeSeconds = null;
   if (lessonData.video_id) {
     pendingReadingPlaybackRange = {start, end};
     if (!ytPlayer) initPlayer({allowReading: true});
@@ -2763,6 +2794,10 @@ function initLocalMedia() {
   });
   localMedia.addEventListener('loadedmetadata', () => {
     if (Number.isFinite(localMedia.duration) && localMedia.duration > 0) {
+      if (pendingResumeSeconds !== null) {
+        localMedia.currentTime = Math.min(pendingResumeSeconds, localMedia.duration);
+        pendingResumeSeconds = null;
+      }
       currentTime = localMedia.currentTime || 0;
       updateActiveByTime(currentTime);
     }
@@ -2799,9 +2834,12 @@ function loadYouTubeApi(callback) {
 
 function createYouTubePlayer(videoId) {
   if (!ytApiReady || !window.YT || !window.YT.Player) return;
+  const playerVars = { playsinline: 1, rel: 0 };
+  // 从精读返回 / 断点续播：视频直接停在该句开头（cued，不自动播放）
+  if (pendingResumeSeconds !== null) playerVars.start = Math.floor(pendingResumeSeconds);
   ytPlayer = new YT.Player('youtube-iframe', {
     videoId,
-    playerVars: { playsinline: 1, rel: 0 },
+    playerVars,
     events: {
       onReady: () => {
         onPlaybackRateChange();
@@ -2817,6 +2855,134 @@ function createYouTubePlayer(videoId) {
   });
 }
 
+// ── 播放位置：从精读返回定位 / 断点续播 / 可拖动进度条 ─────────────────
+// 精读页「返回课程」带 ?t=<秒>&sentence_key=<key>；没有 t 时用上次保存的播放进度。
+const returnParams = new URLSearchParams(window.location.search);
+let pendingResumeSeconds = null;
+let pendingReturnSentenceKey = returnParams.get('sentence_key');
+let mediaProgressDragging = false;
+let lastSavedProgressSeconds = null;
+
+async function prepareResumePosition() {
+  if (!isMediaLesson()) return;
+  let seconds = returnParams.has('t') ? Number(returnParams.get('t')) : NaN;
+  if (!Number.isFinite(seconds)) {
+    try {
+      const resp = await fetch(`/api/v2/lessons/${LESSON_ID}/progress`);
+      if (resp.ok) seconds = Number((await resp.json()).last_position_seconds);
+    } catch (_) {}
+  }
+  if (!Number.isFinite(seconds) || seconds <= 0) return;
+  pendingResumeSeconds = seconds;
+  lastSavedProgressSeconds = seconds;
+  currentTime = seconds;
+  updateActiveByTime(seconds);
+  // 地址栏去掉一次性的返回参数，刷新页面时改用保存的进度
+  if (returnParams.has('t') || returnParams.has('sentence_key')) {
+    history.replaceState(null, '', window.location.pathname);
+  }
+}
+
+// 正文加载后会因翻译等数据到达而重渲染（替换 DOM）：返回后的前几秒内每次渲染完都重新定位
+const RETURN_SCROLL_WINDOW_MS = 6000;
+let returnScrollDeadline = 0;
+
+function scrollToReturnSentence() {
+  if (pendingReturnSentenceKey === null || activeStudyMode !== 'reading') return;
+  const key = pendingReturnSentenceKey;
+  const target = [...document.querySelectorAll('#reading-passage .reading-sentence')]
+    .find(el => el.dataset.sentenceKey === key);
+  if (!target) return;
+  if (!returnScrollDeadline) {
+    returnScrollDeadline = Date.now() + RETURN_SCROLL_WINDOW_MS;
+    if (!isMediaLesson()) history.replaceState(null, '', window.location.pathname);
+    setTimeout(() => {
+      pendingReturnSentenceKey = null;
+      document.querySelectorAll('#reading-passage .return-target')
+        .forEach(el => el.classList.remove('return-target'));
+    }, RETURN_SCROLL_WINDOW_MS);
+  }
+  if (Date.now() > returnScrollDeadline) return;
+  target.scrollIntoView({block: 'center'});
+  target.classList.add('return-target');
+}
+
+function mediaDuration() {
+  let duration = NaN;
+  if (localMedia) duration = Number(localMedia.duration);
+  else if (ytPlayer && typeof ytPlayer.getDuration === 'function') {
+    try { duration = Number(ytPlayer.getDuration()); } catch (_) {}
+  }
+  if (Number.isFinite(duration) && duration > 0) return duration;
+  const last = sentenceUnits[sentenceUnits.length - 1];
+  const fallback = Number(last?.end);
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+}
+
+function updateMediaProgressBar() {
+  const bar = document.getElementById('media-progress');
+  const range = document.getElementById('media-progress-range');
+  if (!bar || !range) return;
+  const visible = isMediaLesson() && activeStudyMode !== 'reading' && Boolean(localMedia || ytPlayer);
+  bar.hidden = !visible;
+  if (!visible || mediaProgressDragging) return;
+  const duration = mediaDuration();
+  const time = pendingResumeSeconds !== null ? pendingResumeSeconds : (readPlayerTime() ?? currentTime);
+  range.max = String(duration || 0);
+  range.value = String(Math.min(time || 0, duration || 0));
+  document.getElementById('media-progress-current').textContent = formatTime(time);
+  document.getElementById('media-progress-duration').textContent = formatTime(duration);
+}
+
+function initMediaProgressBar() {
+  const range = document.getElementById('media-progress-range');
+  if (!range || range.dataset.bound) return;
+  range.dataset.bound = '1';
+  range.addEventListener('input', () => {
+    mediaProgressDragging = true;
+    document.getElementById('media-progress-current').textContent = formatTime(range.value);
+  });
+  range.addEventListener('change', () => {
+    mediaProgressDragging = false;
+    const seconds = Number(range.value);
+    if (!Number.isFinite(seconds)) return;
+    stopReadingRange();
+    currentTime = seconds;
+    seekTo(seconds);
+    saveLessonProgress();
+  });
+  setInterval(updateMediaProgressBar, 500);
+  updateMediaProgressBar();
+}
+
+function saveLessonProgress({beacon = false} = {}) {
+  if (!isMediaLesson() || pendingResumeSeconds !== null) return;
+  const seconds = readPlayerTime() ?? currentTime;
+  if (!Number.isFinite(seconds) || seconds <= 0) return;
+  if (lastSavedProgressSeconds !== null && Math.abs(seconds - lastSavedProgressSeconds) < 1) return;
+  lastSavedProgressSeconds = seconds;
+  const sentence = sentenceUnits[activeSentenceIdx];
+  const payload = JSON.stringify({
+    last_position_seconds: seconds,
+    last_segment_index: Number(sentence?.segment_ids?.[0] || 0),
+  });
+  const url = `/api/v2/lessons/${LESSON_ID}/progress`;
+  if (beacon && navigator.sendBeacon) {
+    navigator.sendBeacon(url, new Blob([payload], {type: 'application/json'}));
+    return;
+  }
+  fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: payload}).catch(() => {});
+}
+
+function initProgressSaving() {
+  if (!isMediaLesson()) return;
+  setInterval(() => saveLessonProgress(), 5000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') saveLessonProgress({beacon: true});
+  });
+  window.addEventListener('pagehide', () => saveLessonProgress({beacon: true}));
+}
+
 function readPlayerTime() {
   if (localMedia) {
     const value = Number(localMedia.currentTime || 0);
@@ -2826,8 +2992,16 @@ function readPlayerTime() {
   }
   if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return null;
   try {
-    const value = Number(ytPlayer.getCurrentTime());
+    let value = Number(ytPlayer.getCurrentTime());
     if (!Number.isFinite(value)) return null;
+    if (pendingResumeSeconds !== null) {
+      // 未开始播放的 YouTube 播放器会报 0（start 参数也只精确到整秒）：
+      // 真正开始播放之前一律以续播点为准，否则每 500ms 的同步会把当前句重置回第一句
+      let playing = false;
+      try { playing = ytPlayer.getPlayerState() === 1; } catch (_) {}
+      if (playing && value >= pendingResumeSeconds - 1.5) pendingResumeSeconds = null;
+      else value = pendingResumeSeconds;
+    }
     currentTime = value;
     return value;
   } catch (_) {
@@ -2836,6 +3010,7 @@ function readPlayerTime() {
 }
 
 function seekTo(seconds) {
+  pendingResumeSeconds = null;
   suppressTimeSyncUntil = Date.now() + 1200;
   if (localMedia) {
     localMedia.currentTime = seconds || 0;
@@ -3242,6 +3417,7 @@ function renderReadingPassage() {
       requestAnimationFrame(renderBatch);
     } else {
       syncHighlightedWordsAfterRender();
+      scrollToReturnSentence();
     }
   };
   requestAnimationFrame(renderBatch);
