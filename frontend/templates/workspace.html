@@ -593,6 +593,27 @@
       font-size: 13px;
       line-height: 1.45;
     }
+    .word-popover .context-meaning {
+      margin-top: 8px;
+      padding: 6px 9px;
+      border-left: 3px solid var(--accent, #2f6f5e);
+      border-radius: 0 6px 6px 0;
+      background: rgba(47,111,94,.07);
+      color: var(--text, #1f2a26);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .word-popover .context-meaning.loading { color: var(--muted); font-size: 13px; }
+    .word-popover .context-meaning .ctx-pos { color: var(--muted); font-size: 12px; margin-right: 3px; }
+    .word-popover .context-meaning .ctx-note { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .word-popover .meaning-label {
+      display: inline-block;
+      margin-right: 6px;
+      color: #8a958e;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .word-popover .context-meaning + .meaning { margin-top: 6px; }
     .word-popover .lookup-source {
       color: #8a958e;
       font-size: 11px;
@@ -1989,6 +2010,10 @@ let activeSidebarResize = null;
 const wordMeaningCache = {};
 const WORD_LOOKUP_LOADING_DELAY_MS = 180;
 let wordLookupRequestToken = 0;
+// 点词卡片「此处」语境义缓存：key = 词||句子，值 {loading, meaning, pos, note, error}
+const wordContextCache = {};
+let wordContextAvailable = true;
+let wordPopoverAnchor = null;
 const savedSentenceKeys = new Set();
 const savedWordSet = new Set();
 const reviewBookWordSet = new Set();
@@ -4706,24 +4731,38 @@ function openWordPopover(anchor, word, meaning, phonetic = '', source = '', dict
     return;
   }
   const pop = document.getElementById('word-popover');
-  const rect = anchor.getBoundingClientRect();
+  wordPopoverAnchor = anchor;
   const normalized = normalizeWord(word);
   const saved = savedWordSet.has(normalized);
   const inReviewBook = reviewBookWordSet.has(normalized);
   const phoneticHtml = phonetic ? `<div class="phonetic">/${escapeHtml(phonetic)}/</div>` : '';
   // \u8bcd\u9891/\u8bcd\u5178\u6807\u6ce8\u884c\uff08COCA\u00b7\u725b\u6d25\u00b7\u67ef\u6797\u65af\uff09\u6309 may \u8981\u6c42\u4e0d\u5c55\u793a\uff1bdictMeta \u6570\u636e\u4fdd\u7559
   const sourceHtml = source === 'external' ? '<div class="lookup-source">AI \u5728\u7ebf\u8865\u5145\u91ca\u4e49</div>' : '';
+  const contextSentence = wordContextAvailable ? wordContextSentence(anchor, word) : '';
+  const contextKey = contextSentence ? `${String(word || '').toLowerCase()}||${contextSentence}` : '';
+  const contextHtml = contextKey ? renderWordContextLine(wordContextCache[contextKey]) : '';
+  const dictLabel = contextHtml ? '<span class="meaning-label">\u8bcd\u5178</span>' : '';
   pop.innerHTML = `<div class="word">${escapeHtml(word)}</div>
     <button class="word-speak-btn" type="button" title="播放发音" aria-label="播放发音" onclick="speakWordFromPopover(event, '${escapeJsAttr(word)}')">🔊</button>
     ${phoneticHtml}
-    <div class="meaning">${escapeHtml(meaning || '\u6682\u65e0\u91ca\u4e49')}</div>
+    ${contextHtml}
+    <div class="meaning">${dictLabel}${escapeHtml(meaning || '\u6682\u65e0\u91ca\u4e49')}</div>
     ${sourceHtml}
     <div class="word-actions">
       <button class="word-save-btn ${saved ? 'saved' : ''}" onclick="toggleWordSave(event, '${escapeJsAttr(normalized)}', '${escapeJsAttr(meaning || '')}')">${saved ? '★ 已收藏' : '☆ 加入生词'}</button>
       <button class="word-review-btn" ${inReviewBook ? 'disabled' : ''} onclick="addWordToReviewFromPopover(event, '${escapeJsAttr(normalized)}', '${escapeJsAttr(meaning || '')}')">${inReviewBook ? '✓ 已在复习本' : '＋ 加入复习本'}</button>
       <button class="word-master-btn" title="标记已掌握：移出生词本，不再高亮" onclick="masterWordFromPopover(event, '${escapeJsAttr(normalized)}')">✓ 已掌握</button>
     </div>`;
+  pop.dataset.contextKey = contextKey;
   pop.classList.add('open');
+  if (contextKey) loadWordContext(contextKey, String(word || '').toLowerCase(), contextSentence);
+  positionWordPopover(anchor);
+}
+
+function positionWordPopover(anchor) {
+  const pop = document.getElementById('word-popover');
+  if (!pop || !anchor?.isConnected || !pop.classList.contains('open')) return;
+  const rect = anchor.getBoundingClientRect();
   const gap = 8;
   const viewportPadding = 12;
   const popRect = pop.getBoundingClientRect();
@@ -4741,6 +4780,77 @@ function openWordPopover(anchor, word, meaning, phonetic = '', source = '', dict
   const left = Math.min(Math.max(viewportPadding, rect.left), Math.max(viewportPadding, maxLeft));
   pop.style.top = `${top}px`;
   pop.style.left = `${left}px`;
+}
+
+// 取被点单词所在的句子，作为 AI 语境义的上下文
+function wordContextSentence(anchor, word) {
+  if (!anchor?.isConnected) return '';
+  let text = anchor.closest('.reading-sentence')
+    ?.querySelector('.reading-sentence-bookmark')?.dataset.sentenceText || '';
+  if (!text) {
+    const host = anchor.closest('ruby')?.parentElement || anchor.parentElement;
+    if (host) {
+      const clone = host.cloneNode(true);
+      clone.querySelectorAll('rt, .word-star, .reading-sentence-bookmark, svg').forEach(node => node.remove());
+      text = clone.textContent || '';
+    }
+  }
+  text = text.replace(/\s+/g, ' ').trim();
+  const needle = String(word || '').toLowerCase();
+  if (!needle || !text.toLowerCase().includes(needle)) return '';
+  if (text.length > 300) {
+    const parts = text.split(/(?<=[.!?。！？])\s+/);
+    text = parts.find(part => part.toLowerCase().includes(needle)) || text;
+    if (text.length > 400) {
+      const at = text.toLowerCase().indexOf(needle);
+      text = text.slice(Math.max(0, at - 180), at + needle.length + 180).trim();
+    }
+  }
+  return text;
+}
+
+function renderWordContextLine(state) {
+  // 未缓存 = 即将请求，先占位；已返回但无结果则不显示这一行
+  if (!state || state.loading) {
+    return '<div class="context-meaning loading"><span class="meaning-label">\u6b64\u5904</span>\u6b63\u5728\u7ed3\u5408\u53e5\u5b50\u5206\u6790\u2026</div>';
+  }
+  if (!state.meaning) return '';
+  const pos = state.pos ? `<span class="ctx-pos">${escapeHtml(state.pos)}</span>` : '';
+  const note = state.note ? `<span class="ctx-note">${escapeHtml(state.note)}</span>` : '';
+  return `<div class="context-meaning"><span class="meaning-label">\u6b64\u5904</span>${pos}${escapeHtml(state.meaning)}${note}</div>`;
+}
+
+async function loadWordContext(key, word, sentence) {
+  if (wordContextCache[key]) return;
+  wordContextCache[key] = { loading: true };
+  let state = { loading: false, meaning: '' };
+  try {
+    const resp = await fetch(`/api/v2/lessons/${LESSON_ID}/word-context`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word, sentence }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (data.available === false) wordContextAvailable = false;
+    state = { loading: false, meaning: data.meaning || '', pos: data.pos || '', note: data.note || '' };
+  } catch (_) {}
+  if (state.meaning) {
+    wordContextCache[key] = state;
+  } else {
+    delete wordContextCache[key]; // 失败不缓存，下次点击可重试
+  }
+  // 只更新仍在显示这个词的弹窗里的那一行，不整卡重绘
+  const pop = document.getElementById('word-popover');
+  const line = pop?.classList.contains('open') ? pop.querySelector('.context-meaning') : null;
+  if (!line || pop.dataset.contextKey !== key) return;
+  const html = state.meaning ? renderWordContextLine(state) : '';
+  if (html) {
+    line.outerHTML = html;
+  } else {
+    line.remove();
+    pop.querySelector('.meaning .meaning-label')?.remove();
+  }
+  positionWordPopover(wordPopoverAnchor);
 }
 
 function speakWordFromPopover(event, word) {

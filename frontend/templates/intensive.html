@@ -497,6 +497,12 @@
     .word-card-phonetic { margin-top: 3px; color: var(--muted); font-family: Georgia, "Times New Roman", serif; }
     .word-card-close { min-width: 34px; min-height: 34px; padding: 0; border-radius: 50%; }
     .word-card-meaning { margin-top: 13px; padding: 11px 12px; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; background: #faf7ef; line-height: 1.6; }
+    .word-card-context { margin-top: 13px; padding: 10px 12px; border-left: 3px solid var(--brand-dark); border-radius: 0 8px 8px 0; background: #eef5f1; line-height: 1.55; }
+    .word-card-context.loading { color: var(--muted); font-size: 13px; }
+    .word-card-context .ctx-pos { margin-right: 4px; color: var(--muted); font-size: 12px; }
+    .word-card-context .ctx-note { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .word-card-label { display: inline-block; margin-right: 7px; color: var(--muted); font-size: 11px; font-weight: 700; }
+    .word-card-context + .word-card-meaning { margin-top: 8px; }
     .word-card-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 13px; color: var(--muted); font-size: 12px; }
     .word-card-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
     .word-card-actions button { width: 100%; }
@@ -732,6 +738,9 @@
     const vocabLog = {};
     const wordAnalysisCache = new Map();
     let activeWordCard = null;
+    // 词卡「此处」语境义：key = 词||句子 key，值 {loading, meaning, pos, note}
+    const wordContextCache = new Map();
+    let wordContextAvailable = true;
     let activePracticeRecorder = null;
     let activePracticeMicKey = null;
     let activeSpeechTimer = null;
@@ -2086,9 +2095,54 @@
       return count ? `已学习 ${count} 次` : '首次学习';
     }
 
+    function renderWordContextLine(state) {
+      if (!wordContextAvailable) return '';
+      if (!state || state.loading) {
+        return '<div class="word-card-context loading"><span class="word-card-label">此处</span>正在结合句子分析…</div>';
+      }
+      if (!state.meaning) return '';
+      const pos = state.pos ? `<span class="ctx-pos">${escapeHtml(state.pos)}</span>` : '';
+      const note = state.note ? `<span class="ctx-note">${escapeHtml(state.note)}</span>` : '';
+      return `<div class="word-card-context"><span class="word-card-label">此处</span>${pos}${escapeHtml(state.meaning)}${note}</div>`;
+    }
+
+    async function loadIntensiveWordContext(word, key) {
+      const sentence = String(sentenceByKey(key)?.text || '').replace(/\s+/g, ' ').trim();
+      const cacheKey = `${word}||${key}`;
+      if (!wordContextAvailable || !sentence || wordContextCache.has(cacheKey)) return;
+      wordContextCache.set(cacheKey, {loading: true});
+      let state = {loading: false, meaning: ''};
+      try {
+        const response = await fetch(`/api/v2/lessons/${LESSON_ID}/word-context`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({word, sentence}),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (data.available === false) wordContextAvailable = false;
+        state = {loading: false, meaning: data.meaning || '', pos: data.pos || '', note: data.note || ''};
+      } catch (_) {}
+      if (state.meaning) wordContextCache.set(cacheKey, state);
+      else wordContextCache.delete(cacheKey); // 失败不缓存，下次点击可重试
+      if (!activeWordCard || activeWordCard.word !== word || activeWordCard.key !== Number(key)) return;
+      const card = document.getElementById('intensive-word-card');
+      const line = card.querySelector('.word-card-context');
+      if (!line) return;
+      const html = state.meaning ? renderWordContextLine(state) : '';
+      if (html) {
+        line.outerHTML = html;
+      } else {
+        line.remove();
+        card.querySelector('.word-card-meaning .word-card-label')?.remove();
+      }
+      positionIntensiveWordCard(activeWordCard.anchor);
+    }
+
     function renderIntensiveWordCard({word, key, meaning = '', phonetic = '', loading = false, error = ''}) {
       const saved = savedLessonWords.has(word);
       const inReviewBook = reviewBookWords.has(word);
+      const contextHtml = renderWordContextLine(wordContextCache.get(`${word}||${key}`));
+      const dictLabel = contextHtml && !error ? '<span class="word-card-label">词典</span>' : '';
       return `<div class="word-card-head">
           <div><h3 class="word-card-title">${escapeHtml(word)}</h3>${phonetic ? `<div class="word-card-phonetic">/${escapeHtml(phonetic.replace(/^\/+|\/+$/g, ''))}/</div>` : ''}</div>
           <div class="word-analysis-actions">
@@ -2096,7 +2150,8 @@
             <button class="word-card-close" type="button" data-close-word-card aria-label="关闭词卡">✕</button>
           </div>
         </div>
-        <div class="word-card-meaning"${error ? ' style="color:var(--danger)"' : ''}>${escapeHtml(error || (loading ? '正在查询释义…' : (meaning || '暂未命中本地释义')))}</div>
+        ${contextHtml}
+        <div class="word-card-meaning"${error ? ' style="color:var(--danger)"' : ''}>${dictLabel}${escapeHtml(error || (loading ? '正在查询释义…' : (meaning || '暂未命中本地释义')))}</div>
         <div class="word-card-status"><span>熟悉程度</span><strong>${escapeHtml(familiarityText(word))}</strong></div>
         <div class="word-card-actions">
           <button class="word-save-button${saved ? ' saved' : ''}" type="button" data-toggle-word-save="${escapeHtml(word)}" data-key="${key}">${saved ? '★ 已收藏' : '☆ 收藏'}</button>
@@ -2134,6 +2189,7 @@
       card.scrollTop = 0;
       card.classList.add('open');
       positionIntensiveWordCard(anchor);
+      loadIntensiveWordContext(normalized, Number(key));
       if (cached) return;
       try {
         const response = await fetch(`/api/v2/lessons/${LESSON_ID}/word-meaning/${encodeURIComponent(normalized)}`);

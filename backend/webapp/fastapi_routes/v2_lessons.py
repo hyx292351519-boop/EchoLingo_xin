@@ -11,6 +11,7 @@ import re
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 import db
 from prompts import LESSON_AI_RECOMMENDATION_PROMPT, PATTERN_EXTRACTION_PROMPT, PATTERN_SCENARIO_PROMPT
@@ -49,6 +50,7 @@ from webapp.services.v2_vocab import (
 )
 from webapp.services.v2_translation import build_translation_units
 from webapp.services import baidu_pan
+from webapp.services import word_context
 
 router = APIRouter(prefix="/api/v2/lessons", tags=["v2-lessons"])
 
@@ -1243,6 +1245,29 @@ def word_meaning(lesson_id: int, word: str):
         "dict_meta": dict_meta,
         "in_review_book": bool(normalized and db.is_word_in_review(normalized)),
     }
+
+
+class WordContextBody(BaseModel):
+    word: str = ""
+    sentence: str = ""
+
+
+@router.post("/{lesson_id}/word-context")
+async def word_context_meaning(lesson_id: int, body: WordContextBody):
+    """点词卡片「此处」语境义；AI 不可用时返回 available=False，前端只显示词典释义。"""
+    if not db.get_v2_lesson(lesson_id):
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    if not word_context.context_meaning_available():
+        return {"available": False, "meaning": "", "pos": "", "note": ""}
+    try:
+        result = await run_in_threadpool(
+            word_context.lookup_context_meaning, body.word, body.sentence
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"available": True, "meaning": "", "error": str(exc)[:200]}, status_code=502
+        )
+    return {"available": True, **result}
 
 
 class TranslateSentencesBody(BaseModel):

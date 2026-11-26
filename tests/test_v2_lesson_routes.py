@@ -1321,6 +1321,69 @@ def test_word_meaning_route_returns_lookup_without_activating_review(tmp_path, m
     assert db.is_word_in_review("complex") is False
 
 
+def test_word_context_route_returns_ai_contextual_meaning(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+    import webapp.services.word_context as word_context
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab-context.db")
+    monkeypatch.setattr(word_context, "_CACHE", word_context.OrderedDict())
+    monkeypatch.setattr(word_context.ai_config, "AI_API_KEY", "test-key")
+    prompts = []
+
+    def fake_create(**kwargs):
+        prompts.append(kwargs["messages"][0]["content"])
+        message = SimpleNamespace(content='{"meaning":"银行","pos":"n.","note":""}')
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(word_context.ai_config, "client", fake_client)
+
+    client = TestClient(create_app())
+    lesson = db.create_v2_lesson(
+        source_type="youtube",
+        source_url="https://www.youtube.com/watch?v=abc123def45",
+        video_id="abc123def45",
+        title="Demo",
+    )
+    url = f"/api/v2/lessons/{lesson['id']}/word-context"
+    body = {"word": "bank", "sentence": "I went to the  bank to deposit money."}
+    data = client.post(url, json=body).json()
+    assert data == {"available": True, "meaning": "银行", "pos": "n.", "note": ""}
+    assert "I went to the bank to deposit money." in prompts[0]
+
+    # 同词同句命中缓存，不再调用 AI
+    client.post(url, json=body)
+    assert len(prompts) == 1
+
+    # 词不在句子里时不调用 AI
+    data = client.post(url, json={"word": "river", "sentence": "I went to the bank."}).json()
+    assert data["meaning"] == ""
+    assert len(prompts) == 1
+
+
+def test_word_context_route_reports_unavailable_without_ai_key(tmp_path, monkeypatch):
+    import db
+    from fastapi_server import create_app
+    import webapp.services.word_context as word_context
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "vocab-context-off.db")
+    monkeypatch.setattr(word_context.ai_config, "AI_API_KEY", "")
+    client = TestClient(create_app())
+    lesson = db.create_v2_lesson(
+        source_type="youtube",
+        source_url="https://www.youtube.com/watch?v=abc123def45",
+        video_id="abc123def45",
+        title="Demo",
+    )
+    data = client.post(
+        f"/api/v2/lessons/{lesson['id']}/word-context",
+        json={"word": "bank", "sentence": "I went to the bank."},
+    ).json()
+    assert data["available"] is False
+    assert data["meaning"] == ""
+
+
 def test_word_meaning_route_enables_external_fallback(tmp_path, monkeypatch):
     import db
     from fastapi_server import create_app
