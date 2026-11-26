@@ -770,6 +770,43 @@ def project_words_to_sentences(units: list[dict], aligned_words: list[dict]) -> 
     return sentences
 
 
+def _alignment_text(value) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def match_aligned_sentences(alignment: dict | None, units: list[dict]) -> dict[int, dict]:
+    """Map unit index -> aligned sentence whose text matches the unit.
+
+    Prefers the same key; otherwise searches forward by text, so sentences that
+    the learner did not edit keep their alignment after an earlier sentence was
+    merged, split or deleted (which shifts every later unit index).
+    """
+    sentences = [
+        item for item in (alignment or {}).get("sentences", []) if isinstance(item, dict)
+    ]
+    if not sentences:
+        return {}
+    by_key = {int(item.get("key", -1)): item for item in sentences}
+    matched: dict[int, dict] = {}
+    cursor = 0
+    for position, unit in enumerate(units):
+        key = int(unit.get("index", position))
+        text = _alignment_text(unit.get("text"))
+        if not text:
+            continue
+        same_key = by_key.get(key)
+        if same_key is not None and _alignment_text(same_key.get("text")) == text:
+            matched[key] = same_key
+            cursor = max(cursor, sentences.index(same_key) + 1)
+            continue
+        for offset in range(cursor, min(len(sentences), cursor + 12)):
+            if _alignment_text(sentences[offset].get("text")) == text:
+                matched[key] = sentences[offset]
+                cursor = offset + 1
+                break
+    return matched
+
+
 def apply_aligned_unit_times(lesson_id: int, units: list[dict]) -> list[dict]:
     """Override translation-unit start/end with real aligned times when available.
 
@@ -781,19 +818,11 @@ def apply_aligned_unit_times(lesson_id: int, units: list[dict]) -> list[dict]:
     alignment = load_lesson_alignment(lesson_id)
     if not alignment:
         return units
-    by_key = {
-        int(item.get("key", -1)): item
-        for item in alignment.get("sentences", [])
-        if isinstance(item, dict)
-    }
+    matched = match_aligned_sentences(alignment, units)
     for position, unit in enumerate(units):
         key = int(unit.get("index", position))
-        aligned = by_key.get(key)
+        aligned = matched.get(key)
         if not aligned or aligned.get("boundary_confidence") not in {"high", "medium"}:
-            continue
-        aligned_text = " ".join(str(aligned.get("text") or "").split()).casefold()
-        unit_text = " ".join(str(unit.get("text") or "").split()).casefold()
-        if not aligned_text or aligned_text != unit_text:
             continue
         unit["start"] = float(aligned.get("start_seconds") or unit.get("start") or 0)
         unit["end"] = float(aligned.get("end_seconds") or unit.get("end") or 0)

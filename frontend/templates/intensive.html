@@ -702,6 +702,7 @@
 <script src="/static/word-coach.js?v=20261120-2"></script>
 <script src="/static/chunk-analysis.js?v=20261123-1"></script>
 <script src="/static/analysis-editor.js?v=20261123-1"></script>
+<script src="/static/sentence-editor.js?v=20261126-1"></script>
   <script>
     const LESSON_ID = {{ lesson_id }};
     const targetSentenceParam = new URLSearchParams(window.location.search).get('sentence_key');
@@ -943,6 +944,7 @@
             <button class="sentence-header-play" type="button" data-play-sentence="${sentence.key}">${hasOriginalMedia() ? '▶ 原声整句' : '▶ 播放'}</button>
             <button class="sentence-save-button${sentence.saved ? ' saved' : ''}" type="button" data-toggle-save="${sentence.key}">${sentence.saved ? '★ 已收藏' : '☆ 收藏'}</button>
             <button type="button" data-toggle-tag-editor="${sentence.key}">🏷 标签</button>
+            <button type="button" data-edit-sentence="${sentence.key}" title="修改这句（改字、断句、合并）">✎ 修改</button>
           </div>
         </div>
         <div class="sentence-tag-editor${tagEditorOpen ? ' open' : ''}">
@@ -2206,6 +2208,35 @@
       }
     }
 
+    // 修改课程句子：保存后带上句子定位参数重新加载，回到刚改的位置
+    function openIntensiveSentenceEditor(key) {
+      if (!window.SentenceEditor) return;
+      const sentences = intensiveDocument.sentences || [];
+      const position = sentences.findIndex(item => Number(item.key) === Number(key));
+      if (position < 0) return;
+      const sentence = sentences[position];
+      // 视频/音频课 block_index 为 null（Number(null) 会变成 0，不能用 isFinite 判断）
+      const isReading = sentence.block_index !== null && sentence.block_index !== undefined;
+      const locator = isReading
+        ? {block_index: Number(sentence.block_index), sentence_index: Number(sentence.sentence_index)}
+        : {unit_index: Number(sentence.key)};
+      SentenceEditor.open({
+        lessonId: LESSON_ID,
+        text: String(sentence.text || '').replace(/\s+/g, ' ').trim(),
+        prevText: sentences[position - 1]?.text || '',
+        nextText: sentences[position + 1]?.text || '',
+        locator,
+        onSaved: result => {
+          const anchor = result.action === 'merge_prev' && sentences[position - 1]
+            ? sentences[position - 1].key
+            : sentence.key;
+          const url = new URL(window.location.href);
+          url.searchParams.set('sentence_key', String(anchor));
+          window.location.replace(url.toString());
+        },
+      });
+    }
+
     function closeIntensiveWordCard() {
       document.getElementById('intensive-word-card').classList.remove('open');
       activeWordCard = null;
@@ -2960,6 +2991,8 @@
         if (shouldOpen && !pronunciationCache.has(key)) loadPronunciationGuide(key);
         return;
       }
+      const editSentence = event.target.closest('[data-edit-sentence]');
+      if (editSentence) { openIntensiveSentenceEditor(Number(editSentence.dataset.editSentence)); return; }
       const toggleTagEditor = event.target.closest('[data-toggle-tag-editor]');
       if (toggleTagEditor) {
         const key = Number(toggleTagEditor.dataset.toggleTagEditor);

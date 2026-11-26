@@ -80,12 +80,20 @@ def reading_tts_is_cached(lesson_id: int) -> bool:
 
 def build_timed_reading_blocks(source_blocks: list[dict], segments: list[dict]) -> list[dict]:
     """Attach generated-audio timing while preserving the imported paragraph layout."""
+    # 按词数把逐句音频段分给各段落，不依赖断句规则：断句规则改进或用户合并/拆分句子
+    # 后句数会变，但每段落的词数不变，后续段落的时间轴不会错位。
     timed_blocks = []
     segment_cursor = 0
     for block in source_blocks:
-        sentence_group = _synthesizable_sentences(str(block.get("text") or ""))
-        timed_sentences = segments[segment_cursor:segment_cursor + len(sentence_group)]
-        segment_cursor += len(sentence_group)
+        text_source = block.get("manual_sentences") or _synthesizable_sentences(str(block.get("text") or ""))
+        expected_words = len(_WORD_TOKEN.findall(" ".join(text_source)))
+        timed_sentences = []
+        word_total = 0
+        while segment_cursor < len(segments) and expected_words and word_total < expected_words:
+            segment = segments[segment_cursor]
+            timed_sentences.append(segment)
+            word_total += len(_WORD_TOKEN.findall(str(segment.get("text") or "")))
+            segment_cursor += 1
         block_copy = dict(block)
         if timed_sentences:
             block_copy.update({
@@ -186,6 +194,26 @@ def _synthesizable_sentences(text: str) -> list[str]:
     return sentences
 
 
+def reading_block_sentence_texts(block: dict) -> list[str]:
+    """阅读块当前显示的句子：用户手动修正的句列表 > 已生成音频的计时句 > 自动断句。"""
+    manual = [
+        " ".join(str(text or "").split())
+        for text in (block.get("manual_sentences") or [])
+    ]
+    manual = [text for text in manual if text]
+    if manual:
+        return manual
+    timed = [
+        " ".join(str(item.get("text") or "").split())
+        for item in (block.get("sentences") or [])
+        if isinstance(item, dict)
+    ]
+    timed = [text for text in timed if text]
+    if timed:
+        return timed
+    return _synthesizable_sentences(str(block.get("text") or ""))
+
+
 def align_sentences_to_boundaries(
     sentences: list[str],
     boundaries: list[dict],
@@ -260,7 +288,7 @@ def build_reading_tts(lesson_id: int) -> dict:
     db.configure_v2_lesson_translation(lesson_id, requested=True)
     source_blocks = db.get_v2_reading_blocks(lesson_id)
     block_sentences = [
-        _synthesizable_sentences(str(block.get("text") or ""))
+        block.get("manual_sentences") or _synthesizable_sentences(str(block.get("text") or ""))
         for block in source_blocks
     ]
     sentences = [sentence for group in block_sentences for sentence in group]

@@ -707,6 +707,9 @@ def init_db(path: Path | None = None):
                 "ALTER TABLE v2_reading_blocks ADD COLUMN end_seconds REAL",
                 "ALTER TABLE v2_reading_blocks ADD COLUMN sentences_json TEXT NOT NULL DEFAULT '[]'",
                 "ALTER TABLE v2_reading_blocks ADD COLUMN source_segment_ids TEXT NOT NULL DEFAULT '[]'",
+                # 用户手动修正过断句/文字：字幕段一句一段不再自动重切；阅读块按手动句列表断句
+                "ALTER TABLE v2_subtitle_segments ADD COLUMN manual INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE v2_reading_blocks ADD COLUMN manual_sentences_json TEXT NOT NULL DEFAULT '[]'",
                 "ALTER TABLE v2_lessons ADD COLUMN translation_requested INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE v2_lessons ADD COLUMN translation_status TEXT NOT NULL DEFAULT 'disabled'",
                 "ALTER TABLE v2_lessons ADD COLUMN translation_done INTEGER NOT NULL DEFAULT 0",
@@ -3126,12 +3129,14 @@ def replace_v2_subtitle_segments(lesson_id: int, segments: list[dict]) -> None:
     with _db() as conn:
         conn.execute("DELETE FROM v2_subtitle_segments WHERE lesson_id=?", (lesson_id,))
         conn.executemany(
-            "INSERT INTO v2_subtitle_segments (lesson_id, idx, start, end, text, normalized, words_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO v2_subtitle_segments"
+            " (lesson_id, idx, start, end, text, normalized, words_json, manual)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     lesson_id, s["index"], s["start"], s["end"], s["text"], s["text"].lower(),
                     json.dumps(s["words"], ensure_ascii=False) if s.get("words") else "",
+                    1 if s.get("manual") else 0,
                 )
                 for s in segments
             ],
@@ -3141,13 +3146,15 @@ def replace_v2_subtitle_segments(lesson_id: int, segments: list[dict]) -> None:
 def get_v2_subtitle_segments(lesson_id: int) -> list[dict]:
     with _db() as conn:
         rows = conn.execute(
-            "SELECT idx, start, end, text, words_json FROM v2_subtitle_segments"
+            "SELECT idx, start, end, text, words_json, manual FROM v2_subtitle_segments"
             " WHERE lesson_id=? ORDER BY idx",
             (lesson_id,),
         ).fetchall()
     out = []
     for r in rows:
         seg = {"index": r["idx"], "start": r["start"], "end": r["end"], "text": r["text"]}
+        if r["manual"]:
+            seg["manual"] = True
         if r["words_json"]:
             try:
                 seg["words"] = json.loads(r["words_json"])
@@ -3164,8 +3171,8 @@ def replace_v2_reading_blocks(lesson_id: int, blocks: list[dict]) -> None:
         conn.executemany(
             "INSERT INTO v2_reading_blocks"
             " (lesson_id, block_index, text, start_seconds, end_seconds,"
-            " sentences_json, source_segment_ids, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " sentences_json, source_segment_ids, manual_sentences_json, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     lesson_id,
@@ -3175,6 +3182,7 @@ def replace_v2_reading_blocks(lesson_id: int, blocks: list[dict]) -> None:
                     block.get("end_seconds"),
                     json.dumps(block.get("sentences", []), ensure_ascii=False),
                     json.dumps(block.get("source_segment_ids", []), ensure_ascii=False),
+                    json.dumps(block.get("manual_sentences") or [], ensure_ascii=False),
                     now,
                 )
                 for block in blocks
@@ -3186,12 +3194,13 @@ def get_v2_reading_blocks(lesson_id: int) -> list[dict]:
     with _db() as conn:
         rows = conn.execute(
             "SELECT block_index, text, start_seconds, end_seconds,"
-            " sentences_json, source_segment_ids FROM v2_reading_blocks"
+            " sentences_json, source_segment_ids, manual_sentences_json FROM v2_reading_blocks"
             " WHERE lesson_id=? ORDER BY block_index",
             (lesson_id,),
         ).fetchall()
-    return [
-        {
+    blocks = []
+    for row in rows:
+        block = {
             "index": row["block_index"],
             "text": row["text"],
             "start_seconds": row["start_seconds"],
@@ -3199,8 +3208,11 @@ def get_v2_reading_blocks(lesson_id: int) -> list[dict]:
             "sentences": json.loads(row["sentences_json"] or "[]"),
             "source_segment_ids": json.loads(row["source_segment_ids"] or "[]"),
         }
-        for row in rows
-    ]
+        manual = json.loads(row["manual_sentences_json"] or "[]")
+        if manual:
+            block["manual_sentences"] = manual
+        blocks.append(block)
+    return blocks
 
 
 def get_v2_document_outline(lesson_id: int, content_hash: str) -> dict | None:

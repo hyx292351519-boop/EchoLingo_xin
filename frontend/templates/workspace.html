@@ -1445,6 +1445,26 @@
       box-decoration-break: clone;
       -webkit-box-decoration-break: clone;
     }
+    .sentence-edit-btn { font-size: 15px; }
+    .reading-sentence-edit {
+      width: 22px;
+      min-height: 22px;
+      margin: 0 3px 0 -3px;
+      padding: 0;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: #879389;
+      font-size: 13px;
+      line-height: 22px;
+      vertical-align: -.2em;
+      opacity: 0;
+      transition: opacity .14s ease;
+    }
+    .reading-sentence:hover .reading-sentence-edit,
+    .reading-sentence-edit:focus-visible { opacity: .75; }
+    .reading-sentence-edit:hover { opacity: 1; background: rgba(47,111,94,.1); color: var(--brand-dark); }
+    @media (hover: none) { .reading-sentence-edit { opacity: .55; } }
     .reading-sentence-bookmark {
       width: 24px;
       min-height: 24px;
@@ -1743,6 +1763,8 @@
             <button id="prev-sentence" class="sentence-nav" onclick="jumpSentence(-1)" disabled title="上一句" aria-label="上一句">&#x2039;</button>
             <span id="subtitle-position">等待字幕</span>
             <button id="next-sentence" class="sentence-nav" onclick="jumpSentence(1)" disabled title="下一句" aria-label="下一句">&#x203A;</button>
+            <button id="edit-sentence" class="sentence-nav sentence-edit-btn" type="button" onclick="editCurrentSentence()" disabled
+                    title="修改这句（改字、断句、合并）" aria-label="修改这句">&#x270E;</button>
             <button id="save-sentence" class="star-save" onclick="saveCurrentSentence()" disabled
                     title="&#x52A0;&#x5165;&#x7CBE;&#x8BFB;" data-tooltip="&#x52A0;&#x5165;&#x7CBE;&#x8BFB;" aria-label="&#x52A0;&#x5165;&#x7CBE;&#x8BFB;">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1939,6 +1961,7 @@
 <script src="/static/elt_credits.js?v=20260809-1"></script>
 <script>document.addEventListener("DOMContentLoaded",function(){if(window.eltCredits){eltCredits.annotate();}});</script>
 <script src="/static/natural-tts.js?v=20260814-1"></script>
+<script src="/static/sentence-editor.js?v=20261126-1"></script>
 <script src="/static/voice-input.js?v=20260715-1"></script>
 <script>
 const LESSON_ID = {{ lesson_id }};
@@ -3490,7 +3513,9 @@ function renderReadingSentences(block) {
               aria-pressed="${saved ? 'true' : 'false'}" aria-label="${saved ? '取消收藏整句' : '收藏整句'}"
               title="${label}" onclick="event.stopPropagation();toggleReadingSentenceSave(this)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h11v17l-5.5-3.4-5.5 3.4z"></path></svg>
-      </button>
+      </button><button class="reading-sentence-edit" type="button" title="修改这句（改字、断句、合并）" aria-label="修改这句"
+              data-block-index="${escapeHtml(block.index ?? '')}" data-sentence-index="${sentenceIndex}"
+              onclick="event.stopPropagation();editReadingSentence(this)">&#x270E;</button>
     </span>`);
     cursor = end;
   }
@@ -4214,6 +4239,8 @@ function updateCurrentSubtitle() {
     prevBtn.disabled = true;
     nextBtn.disabled = true;
     saveBtn.classList.remove('saved');
+    const editBtn = document.getElementById('edit-sentence');
+    if (editBtn) editBtn.disabled = true;
     return;
   }
   if (!sentenceUnits.length) {
@@ -4227,6 +4254,8 @@ function updateCurrentSubtitle() {
     prevBtn.disabled = true;
     nextBtn.disabled = true;
     saveBtn.classList.remove('saved');
+    const editBtn = document.getElementById('edit-sentence');
+    if (editBtn) editBtn.disabled = true;
     return;
   }
 
@@ -4252,8 +4281,85 @@ function updateCurrentSubtitle() {
   saveBtn.disabled = false;
   prevBtn.disabled = idx <= 0;
   nextBtn.disabled = idx >= sentenceUnits.length - 1;
+  const editBtn = document.getElementById('edit-sentence');
+  if (editBtn) editBtn.disabled = false;
   updateSaveState();
   syncNoteTargetFromPlayback();
+}
+
+// ── 修改课程句子（改字 / 回车拆句 / 合并 / 删除）────────────────────────
+function editCurrentSentence() {
+  if (!window.SentenceEditor || !sentenceUnits.length) return;
+  const idx = activeSentenceIdx >= 0 ? activeSentenceIdx : 0;
+  const unit = sentenceUnits[idx];
+  if (!unit) return;
+  SentenceEditor.open({
+    lessonId: LESSON_ID,
+    text: normalizeSentenceText(unit.text),
+    prevText: sentenceUnits[idx - 1]?.text || '',
+    nextText: sentenceUnits[idx + 1]?.text || '',
+    locator: {unit_index: Number(unit.index ?? idx)},
+    onSaved: result => reloadLessonSentences(result, {listeningIdx: idx}),
+  });
+}
+
+function readingSentenceList() {
+  const list = [];
+  for (const block of readingBlocks) {
+    (block.sentences || []).forEach((sentence, sentenceIndex) => {
+      list.push({block, sentence, sentenceIndex});
+    });
+  }
+  return list;
+}
+
+function editReadingSentence(button) {
+  if (!window.SentenceEditor) return;
+  const blockIndex = Number(button.dataset.blockIndex);
+  const sentenceIndex = Number(button.dataset.sentenceIndex);
+  const list = readingSentenceList();
+  const position = list.findIndex(item => Number(item.block.index) === blockIndex && item.sentenceIndex === sentenceIndex);
+  if (position < 0) return;
+  const {sentence} = list[position];
+  // 视频/音频课的阅读句带句单元编号；纯文本课按段落 + 句序定位
+  const unitIndex = Number(sentence.sentence_key);
+  const locator = Number.isFinite(unitIndex) && sentence.sentence_key !== undefined && sentence.sentence_key !== null
+    ? {unit_index: unitIndex}
+    : {block_index: blockIndex, sentence_index: sentenceIndex};
+  SentenceEditor.open({
+    lessonId: LESSON_ID,
+    text: normalizeSentenceText(sentence.text),
+    prevText: list[position - 1]?.sentence.text || '',
+    nextText: list[position + 1]?.sentence.text || '',
+    locator,
+    onSaved: result => reloadLessonSentences(result),
+  });
+}
+
+async function reloadLessonSentences(result = {}, {listeningIdx = null} = {}) {
+  readingBlocks = [];
+  readingPassageSignature = '';
+  await loadSubtitles({render: false});
+  if (listeningIdx !== null && sentenceUnits.length) {
+    const nextIdx = result.action === 'merge_prev' ? listeningIdx - 1 : listeningIdx;
+    activeSentenceIdx = Math.max(0, Math.min(sentenceUnits.length - 1, nextIdx));
+  } else if (activeSentenceIdx >= sentenceUnits.length) {
+    activeSentenceIdx = sentenceUnits.length - 1;
+  }
+  await loadSentenceTranslations();
+  if (activeStudyMode === 'reading') {
+    await loadReadingLesson();
+  } else {
+    updateCurrentSubtitle();
+    loadReadingLesson({render: false});
+  }
+  if (result.translation_pending) {
+    // 改过的句子在后台补译，稍后刷新一次中文
+    setTimeout(async () => {
+      await loadSentenceTranslations();
+      if (activeStudyMode === 'reading') renderReadingPassage(); else updateCurrentSubtitle();
+    }, 6000);
+  }
 }
 
 function currentSentenceKey() {

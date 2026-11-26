@@ -36,7 +36,7 @@ from webapp.services.document_outline import (
 )
 from webapp.services.v2_review_export import export_review_html, synthesize_sentence_audio
 from webapp.services.natural_tts import is_current_tts_audio
-from webapp.services.v2_tts import cancel_reading_tts
+from webapp.services.v2_tts import cancel_reading_tts, reading_block_sentence_texts
 from webapp.services.v2_vocab import (
     forget_word_meaning_cache,
     highlight_reading_blocks,
@@ -50,6 +50,7 @@ from webapp.services.v2_vocab import (
 )
 from webapp.services.v2_translation import build_translation_units
 from webapp.services import baidu_pan
+from webapp.services import sentence_editing
 from webapp.services import word_context
 
 router = APIRouter(prefix="/api/v2/lessons", tags=["v2-lessons"])
@@ -1171,6 +1172,10 @@ def lesson_reading(lesson_id: int, wordlists: str | None = None):
     highlighted = highlight_reading_blocks(
         blocks, hidden_words=hidden_words, source_words=source_words, source_lists=source_lists
     )
+    # 句子由后端统一断句（与精读、翻译同一规则，含用户手动修正），前端不再自行切句
+    for block in highlighted["blocks"]:
+        if not block.get("sentences"):
+            block["sentences"] = [{"text": text} for text in reading_block_sentence_texts(block)]
     return {"lesson": lesson, "blocks": highlighted["blocks"], "candidate_count": highlighted["candidate_count"]}
 
 
@@ -1245,6 +1250,59 @@ def word_meaning(lesson_id: int, word: str):
         "dict_meta": dict_meta,
         "in_review_book": bool(normalized and db.is_word_in_review(normalized)),
     }
+
+
+class SentenceEditBody(BaseModel):
+    action: str = "replace"
+    original_text: str = ""
+    texts: list[str] = []
+    unit_index: int | None = None
+    block_index: int | None = None
+    sentence_index: int | None = None
+
+
+def _backfill_edited_translations(lesson_id: int, texts: list[str]) -> None:
+    """改过的句子没有中文翻译：本地 Hy-MT 可用时后台补译，失败静默（页面显示无翻译）。"""
+    from webapp.services.hy_translate import is_ready as hy_ready
+    from webapp.services.hy_translate import translate as hy_translate
+
+    if not hy_ready():
+        return
+    for text in texts:
+        try:
+            translation = hy_translate(text)
+        except Exception:
+            continue
+        if translation:
+            db.upsert_v2_sentence(text, translation=translation)
+
+
+@router.post("/{lesson_id}/sentences/edit")
+def edit_lesson_sentence(lesson_id: int, body: SentenceEditBody):
+    """学习者修正课程句子：改文字 / 回车拆句 / 与上下句合并 / 删除。"""
+    try:
+        result = sentence_editing.edit_lesson_sentence(
+            lesson_id,
+            action=body.action,
+            original_text=body.original_text,
+            texts=body.texts,
+            unit_index=body.unit_index,
+            block_index=body.block_index,
+            sentence_index=body.sentence_index,
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    except sentence_editing.StaleSentenceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except sentence_editing.SentenceEditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    lesson = db.get_v2_lesson(lesson_id) or {}
+    pending = []
+    if int(lesson.get("translation_requested") or 0):
+        pending = sentence_editing.untranslated_texts(result["changed"])
+    if pending:
+        db.spawn_with_db_context(_backfill_edited_translations, lesson_id, pending)
+    return {"ok": True, "count": result["count"], "translation_pending": len(pending)}
 
 
 class WordContextBody(BaseModel):

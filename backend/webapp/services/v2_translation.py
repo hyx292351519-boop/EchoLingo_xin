@@ -35,6 +35,20 @@ def _split_segment_by_words(segment: dict) -> list[Segment] | None:
             buf = []
     if buf:
         groups.append(buf)
+
+    def group_text(group: list[dict]) -> str:
+        return "".join(str(w.get("text") or "") + str(w.get("punctuation") or "") for w in group)
+
+    # 缩写（Fig. 6 / Dr. Smith）和带空格小数后的句点不是句界，与文本断句同一规则
+    merged_groups: list[list[dict]] = []
+    for group in groups:
+        if merged_groups and SentenceAnalyzer.is_false_sentence_break(
+            group_text(merged_groups[-1]), group_text(group)
+        ):
+            merged_groups[-1] = merged_groups[-1] + group
+        else:
+            merged_groups.append(group)
+    groups = merged_groups
     out: list[Segment] = []
     for group in groups:
         # punctuation 字段（". "/", "）附着在词后，包含所需空格，一并拼接
@@ -262,8 +276,33 @@ def _split_unit_by_capitals(unit: dict) -> list[dict]:
     return out
 
 
+def _manual_units(segments: list[dict]) -> list[dict]:
+    """用户修正过断句的课：字幕段已是一句一段，原样作为句单元，不再自动重切。"""
+    units = []
+    for segment in segments:
+        text = " ".join(str(segment.get("text") or "").split())
+        if not text:
+            continue
+        segment_id = int(segment.get("index", len(units)))
+        units.append({
+            "index": len(units),
+            "text": text,
+            "start": float(segment.get("start") or 0),
+            "end": float(segment.get("end") or segment.get("start") or 0),
+            "highlighted_words": sorted(str(w) for w in segment.get("highlighted_words", [])),
+            "word_meanings": dict(segment.get("word_meanings") or {}),
+            "highlighted_word_lists": dict(
+                segment.get("highlighted_word_lists") or segment.get("word_lists") or {}
+            ),
+            "segment_ids": [segment_id],
+        })
+    return units
+
+
 def build_translation_units(segments: list[dict]) -> list[dict]:
     """Mirror the workspace sentence-unit boundaries used for playback."""
+    if segments and all(segment.get("manual") for segment in segments):
+        return _manual_units(segments)
     units: list[dict] = []
     parts: list[str] = []
     word_count = 0
@@ -345,13 +384,13 @@ def translate_reading_blocks(lesson_id: int) -> dict:
 
     翻译缓存按文本键（v2_sentence），TTS 完成后字幕段复用同一份缓存。
     """
-    from webapp.services.v2_tts import _synthesizable_sentences
+    from webapp.services.v2_tts import reading_block_sentence_texts
 
     blocks = db.get_v2_reading_blocks(lesson_id)
     texts: list[str] = []
     seen: set[str] = set()
     for block in blocks:
-        for sentence in _synthesizable_sentences(str(block.get("text") or "")):
+        for sentence in reading_block_sentence_texts(block):
             normalized = " ".join(sentence.split())
             if normalized and normalized not in seen:
                 seen.add(normalized)

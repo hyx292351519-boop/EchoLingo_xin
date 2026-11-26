@@ -87,6 +87,25 @@ The Vocabulary Atelier filters words by familiarity, mastery, frequency, exam li
 - Click-to-lookup subtitles, sentence collection, and custom tags
 - AI-generated outline and timestamp navigation
 - Ask AI about selected subtitles and export the conversation
+- Correct lesson sentences while studying: fix typos, split or merge badly broken sentences, delete noise lines
+
+#### Correcting lesson sentences
+
+Automatically built lessons occasionally break a sentence in the wrong place or mis-transcribe a word. Fix it on the spot:
+
+1. Click the **✎** button next to the sentence: in listening mode it sits in the "当前句" (current sentence) bar, in reading mode it appears when you hover a sentence, and on the intensive page it is "✎ 修改" next to "🏷 标签".
+2. In the editor:
+   - **Edit text**: change it and save;
+   - **Split**: press Enter where the sentence should break; each line becomes one sentence;
+   - **Merge**: "与上一句合并" / "与下一句合并" (merge with previous / next);
+   - **Delete**: "删除这句", then click again to confirm.
+3. `Ctrl+Enter` saves, `Esc` cancels. Intensive study, reading, listening, and translation all use the corrected sentences, and the page returns to the edited sentence.
+
+Notes:
+
+- For video/audio lessons, a merge spans from the first sentence's start to the second one's end; a split uses word timestamps when available, otherwise character proportions.
+- If the lesson has Chinese translation enabled and the local translation model is ready, only the changed sentences are re-translated in the background.
+- Editing text does not regenerate synthesized reading audio; re-fetching or re-transcribing subtitles replaces manual corrections.
 
 ### Vocabulary and sentence study
 

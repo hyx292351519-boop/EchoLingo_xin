@@ -136,6 +136,20 @@ class SentenceAnalyzer:
     _SENTENCE_SPAN = re.compile(r'.+?(?:[.?!;]["\')\]]*|$)(?=\s+|$)', re.S)
     _HARD_MAX_SENTENCE_WORDS = 45
     _MAX_COMMA_CONTINUATION_WORDS = 45
+    # 句点不是句界的情况：缩写（Fig. 6 / Dr. Smith / U.S. economy / e.g. the）、
+    # 被空格隔开的小数（ASR/PDF 产出的 "2. 5"）和独立的列表序号（"1." / "(2)"）。
+    _ABBR_TOKEN_RE = re.compile(r"(?:^|[\s(\[\"'])([A-Za-z]+(?:\.[A-Za-z]+)*)\.[\"')\]]*$")
+    _TITLE_ABBREVIATIONS = {
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "rev", "gen",
+        "capt", "lt", "col", "sgt", "hon", "messrs",
+    }
+    _REFERENCE_ABBREVIATIONS = {
+        "fig", "figs", "eq", "eqs", "no", "nos", "vol", "vols", "pp", "p", "sec",
+        "ch", "chap", "ref", "refs", "tab", "approx", "ca", "cf", "vs", "v", "etc",
+        "al", "ex", "esp", "incl", "dept", "est", "min", "max", "avg", "op",
+        "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    }
+    _ALWAYS_JOIN_INITIALISMS = {"e.g", "i.e", "cf", "viz"}
     # ASR 转录丢句末点时的大写断句规则（原 v2_intensive 阅读尺，615c277 引入，
     # dd2d5d9 统一断句后成死代码，2026-08-14 并入统一断句尺）：
     # 句中大写词视作句界，但连续大写专名（New York / River Thames）不构成句界；
@@ -235,6 +249,12 @@ class SentenceAnalyzer:
                 continue
             if current in cls._CAPITAL_SPLIT_EXCLUDED_TOKENS:
                 continue
+            # "…but Fig. 6 shows" / "…with Dr. Smith"：大写缩写是句中成分，不是新句开头
+            abbreviation = re.match(r"([A-Za-z]+)\.", text[boundary.end():])
+            if abbreviation and abbreviation.group(1).lower() in (
+                cls._TITLE_ABBREVIATIONS | cls._REFERENCE_ABBREVIATIONS
+            ):
+                continue
             if current in cls._CAPITAL_SPLIT_FUNCTION_WORDS:
                 result.append(cls._close_sentence(candidate))
                 start = boundary.end()
@@ -299,11 +319,48 @@ class SentenceAnalyzer:
         if not cleaned:
             return []
         pieces = [m.group(0).strip() for m in cls._SENTENCE_SPAN.finditer(cleaned)]
-        pieces = [p for p in pieces if p]
+        pieces = cls.merge_false_sentence_breaks([p for p in pieces if p])
         out: list[str] = []
         for piece in pieces or [cleaned]:
             out.extend(cls._split_overlong_sentence(piece))
         return cls._merge_comma_continuations(out)
+
+    @classmethod
+    def is_false_sentence_break(cls, previous: str, following: str) -> bool:
+        """previous 以句点结尾但其实不是句子结束（缩写、带空格的小数、列表序号）。"""
+        previous = str(previous or "").strip()
+        following = str(following or "").lstrip(" \"'([")
+        if not previous.endswith((".", ".)", '."', ".'")) or not following:
+            return False
+        first = following[0]
+        starts_lower = first.islower()
+        starts_digit = first.isdigit()
+        if re.search(r"\d\.$", previous) and starts_digit:
+            return True  # "2. 5 percent"
+        if re.fullmatch(r"\(?\d{1,3}[.)]", previous):
+            return True  # 独立的列表序号 "1."
+        match = cls._ABBR_TOKEN_RE.search(previous)
+        if not match:
+            return False
+        token = match.group(1).lower()
+        if "." in token or token in cls._ALWAYS_JOIN_INITIALISMS:
+            # U.S. / a.m. / e.g.：后面接小写或数字才是句中
+            return token in cls._ALWAYS_JOIN_INITIALISMS or starts_lower or starts_digit
+        if token in cls._TITLE_ABBREVIATIONS:
+            return first.isupper()
+        if token in cls._REFERENCE_ABBREVIATIONS:
+            return starts_digit or starts_lower or str(following).startswith("(")
+        return False
+
+    @classmethod
+    def merge_false_sentence_breaks(cls, pieces: list[str]) -> list[str]:
+        merged: list[str] = []
+        for piece in pieces:
+            if merged and cls.is_false_sentence_break(merged[-1], piece):
+                merged[-1] = f"{merged[-1]} {piece}"
+            else:
+                merged.append(piece)
+        return merged
 
     @classmethod
     def _merge_comma_continuations(cls, pieces: list[str]) -> list[str]:

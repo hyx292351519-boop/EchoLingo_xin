@@ -5,7 +5,7 @@ import re
 
 import db
 from webapp.services.dicts import eng_ipa, lookup_ecdict_phonetic
-from webapp.services.mfa_alignment import get_alignment_status, load_lesson_alignment, numeric_token_ipa
+from webapp.services.mfa_alignment import get_alignment_status, load_lesson_alignment, match_aligned_sentences, numeric_token_ipa
 from webapp.services.v2_translation import build_translation_units
 from webapp.services.v2_vocab import highlight_reading_blocks, highlight_segments
 
@@ -113,11 +113,7 @@ def build_intensive_document(
     sentences: list[dict] = []
     is_reading = str(lesson.get("source_type", "")).startswith("reading")
     alignment = None if is_reading else load_lesson_alignment(lesson_id)
-    aligned_by_key = {
-        int(item.get("key", -1)): item
-        for item in (alignment or {}).get("sentences", [])
-        if isinstance(item, dict)
-    }
+    aligned_by_key: dict[int, dict] = {}
     alignment_model = str((alignment or {}).get("model") or "")
     timing_source = (
         "groq" if alignment_model.startswith("groq:")
@@ -142,12 +138,9 @@ def build_intensive_document(
                 # 无 TTS 的块：与翻译管线同一把断句尺（_synthesizable_sentences）。
                 # 若用本地启发式重切，会把 "(Bornmann and Mutz, 2015)" 在数字前断开，
                 # 碎片单元从未被翻译，中文随之丢失。
-                from webapp.services.v2_tts import _synthesizable_sentences
+                from webapp.services.v2_tts import reading_block_sentence_texts
 
-                pairs = [
-                    (text, {})
-                    for text in _synthesizable_sentences(block.get("text", ""))
-                ]
+                pairs = [(text, {}) for text in reading_block_sentence_texts(block)]
             for sentence_index, (text, timed) in enumerate(pairs):
                 key = reading_sentence_key(block_index, sentence_index)
                 saved = saved_by_key.get(key) or saved_by_text.get(_normalize_sentence(text))
@@ -182,6 +175,7 @@ def build_intensive_document(
             include_meanings=False,
             source_words=source_words,
         )
+        aligned_by_key = match_aligned_sentences(alignment, segments)
         for fallback_index, segment in enumerate(segments):
             key = int(segment.get("index", fallback_index))
             text = " ".join(str(segment.get("text", "")).split())
