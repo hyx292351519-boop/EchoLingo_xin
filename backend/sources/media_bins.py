@@ -29,10 +29,95 @@ def enable_bundled_runtime() -> None:
         return
     for directory in (BUNDLED_VCREDIST_DIR, BUNDLED_FFMPEG_DIR, _REPO_ROOT / "tools" / "tesseract"):
         try:
-            if directory.is_dir():
+            if directory.is_dir() and not _has_lfs_pointer_dll(directory):
                 os.add_dll_directory(str(directory))
         except OSError:
             continue
+    _preload_newest_msvcp140()
+
+
+_LFS_POINTER_PREFIX = b"version https://git-lfs"
+
+
+def _has_lfs_pointer_dll(directory: Path) -> bool:
+    """源码检出未执行 git lfs pull 时，tools/ 下的 DLL 只是几百字节的文本指针。
+    这种目录一旦登记进 DLL 搜索路径，按名加载（如 msvcp140_1.dll）会命中指针文件，
+    报 "%1 is not a valid Win32 application"，onnxruntime/ctranslate2 全部加载失败。"""
+    for dll in directory.glob("*.dll"):
+        try:
+            if dll.stat().st_size < 1024:
+                with dll.open("rb") as fh:
+                    if fh.read(len(_LFS_POINTER_PREFIX)) == _LFS_POINTER_PREFIX:
+                        return True
+        except OSError:
+            continue
+    return False
+
+
+# VS 2022 17.10+ 编译的原生库（onnxruntime 1.2x+、ctranslate2 等）在 14.40 以下的
+# msvcp140.dll 上会在 std::mutex 处 0xc0000005 崩溃，整个服务器进程直接退出
+# （前端表现为 "Failed to fetch"）。Anaconda 等发行版在 python.exe 同目录自带旧版
+# msvcp140.dll，而 Windows 加载器优先查应用目录，add_dll_directory 无法覆盖。
+# 解决：在任何原生库导入前，按完整路径预加载已知最新的 msvcp140.dll——同名模块
+# 已在进程内时，后续按名解析都会复用它。
+_MIN_MSVCP140_VERSION = (14, 40)
+
+
+def _dll_file_version(path: Path) -> tuple[int, int, int, int] | None:
+    """读取 DLL 的 FileVersion；非有效 PE（如未拉取的 Git LFS 指针）返回 None。"""
+    import ctypes
+    from ctypes import wintypes
+
+    version = ctypes.WinDLL("version")
+    size = version.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return None
+    buf = ctypes.create_string_buffer(size)
+    if not version.GetFileVersionInfoW(str(path), 0, size, buf):
+        return None
+    ptr = ctypes.c_void_p()
+    length = wintypes.UINT()
+    if not version.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(length)) or not ptr.value:
+        return None
+    # VS_FIXEDFILEINFO: dwSignature, dwStrucVersion, dwFileVersionMS, dwFileVersionLS, ...
+    fields = ctypes.cast(ptr, ctypes.POINTER(wintypes.DWORD * 4)).contents
+    ms, ls = fields[2], fields[3]
+    return (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF)
+
+
+def _preload_newest_msvcp140() -> None:
+    import ctypes
+
+    system_root = Path(os.environ.get("SystemRoot") or r"C:\Windows")
+    candidates = [
+        BUNDLED_VCREDIST_DIR / "msvcp140.dll",
+        system_root / "System32" / "msvcp140.dll",
+        Path(sys.executable).parent / "msvcp140.dll",
+        Path(sys.base_prefix) / "msvcp140.dll",
+    ]
+    best: tuple[tuple[int, int, int, int], Path] | None = None
+    for candidate in candidates:
+        try:
+            if not candidate.is_file():
+                continue
+            found = _dll_file_version(candidate)
+        except OSError:
+            continue
+        if found and (best is None or found > best[0]):
+            best = (found, candidate)
+    if best is None:
+        return
+    found, path = best
+    try:
+        ctypes.WinDLL(str(path))
+    except OSError:
+        return
+    if found[:2] < _MIN_MSVCP140_VERSION:
+        print(
+            f"[runtime] 警告：可用的 msvcp140.dll 最高仅 {'.'.join(map(str, found))}"
+            f"（{path}），onnxruntime/Whisper 可能崩溃。请安装最新 VC++ 2015-2022 运行库。",
+            flush=True,
+        )
 
 
 def _exe(name: str) -> str:

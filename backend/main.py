@@ -5,6 +5,11 @@ import os
 import sys
 from pathlib import Path
 
+from sources.media_bins import enable_bundled_runtime
+
+# 必须早于任何 whisper/onnxruntime 原生库导入（见 media_bins._preload_newest_msvcp140）
+enable_bundled_runtime()
+
 from analyzer import SentenceAnalyzer
 from renderer import LessonRenderer
 from sources import (
